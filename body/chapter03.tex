@@ -87,17 +87,75 @@ x86处理器硬件上主要有两个结构对非根模式下的运行进行控�
 
 \subsection{系统总体架构}
 
+
+
+
+
 \subsection{客户虚拟机内存安全的保证}
 
-\subsubsection{基本原理}
 
-\subsubsection{特殊边界情形}
-
-\subsection{客户虚拟机磁盘安全的保证}
 
 \subsubsection{基本原理}
 
-\subsubsection{特殊边界情形}
+\subsubsection{特殊边界情形处理}
+
+
+
+
+\subsection{客户虚拟机磁盘数据安全的保证}
+
+\subsubsection{基本原理}
+
+在正常的磁盘虚拟化过程中，磁盘读取即是虚拟机监控器将被请求的磁盘数据块从磁盘映像中取出并放置到客户虚拟机指定的内存位置。反之，磁盘写入则是虚拟机监控器从客户虚拟机指定内存位置获取待写数据并存储到磁盘映像相应位置。
+
+由于L2客户虚拟机的设备IO部分仍由L1虚拟机监控器来模拟，L1负责L2实际磁盘IO数据的读取和保存，L2的RAW磁盘映像亦被存储在L1，完全绕过L1不让其接触L2的磁盘IO数据是不实际的。而我们又要保护L2磁盘IO的安全性，故只能退而求其次，让L1始终只能接触到L2加密后的磁盘IO数据。在加密密钥没有被泄露给L1的前提下，加过密的磁盘IO数据对于L1是没有意义的。
+
+要做到这一点，以下四个条件必须得到满足：
+
+\begin{itemize}
+\item{L1中存储的L2客户虚拟机磁盘映像必须事先经过加密。否则，L1可以直接以静态方式挂载访问L2磁盘分区和文件系统中的内容。}
+\item{当L2进行磁盘读取时，加密后的L2磁盘数据必须要在L1将其读取到相应L2内存空间之后和L2实际使用这一部分数据之前，得到解密。且解密后的这部分数据存在的L2内存空间，L1是被禁止访问的。}
+\item{当L2进行磁盘写入时，原先的明文L2待写磁盘数据必须要在L1能接触到其并将其写入磁盘映像之前，得到加密。也就是说，待写磁盘数据在被加密前，其所存在的L2内存空间，L1是被禁止访问的。}
+\item{以上三个条件必须做到对L2完全透明，对L1基本透明（L1其实可以发现其上保存的L2磁盘映像是经过加密的）。}
+\end{itemize}
+
+对于第一个条件，我们可以用现有的成熟加解密方案处理L2磁盘映像，如AES和DES。
+
+对于第二和第三个条件，L0可以为之完成相应的加解密工作，也可以限制L1对L2的访存范围（通过上节论述）。这里隐含的一个条件是，L0必须能够及时地获取执行机会，也就是说，在需要L0进行加解密时L0必须要得到及时通知。万幸的是，L2客户虚拟机在进行磁盘读取和写入时，均包含了一些敏感操作（IO指令或读写MMIO地址），会立即产生到L0的虚拟机陷入（VMExit），从而让L0得到通知。
+
+对于第四个条件，L2始终接触到的均是明文数据，其不会觉察到L0和L1在事关其磁盘数据安全上做出的斗争。对于L1，除了观察到磁盘映像经过加密这一事实外，在其不威胁L2磁盘数据安全的前提下，其所经历的行为也和正常磁盘虚拟化过程无二致。
+
+
+\subsubsection{PIO部分的处理}
+
+在L2客户操作系统刚启动时，其通过PIO（Programmed Input/Output）的方式读取磁盘数据。PIO是一种同步的简单磁盘数据访问方式。x86处理器上有256个IO端口，其中的一部分被预留给了IDE控制器，如下表所示。而处理器通过x86 ISA中的IO指令（in、out、ins、outs）来读写这些IO端口，来达到访问磁盘数据的目的。PIO的过程是同步的，处理器在执行这些IO指令时不能进行其他工作。
+
+\begin{table}[!htpb]
+\bicaption[tab:pio]{磁盘PIO对IO端口的使用说明表}{磁盘PIO对IO端口的使用说明表}{Table}{x86 IO port used in disk PIO}
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tabular}{ccc}
+\toprule
+Port Offset	& Function & Description\\
+\midrule
+0	& Data Port	& Read/Write PIO data bytes on this port.\\
+1	& Features / Error Information	& Usually used for ATAPI devices.\\
+2	& Sector Count	& Number of sectors to read/write (0 is a special value).\\
+3	& Sector Number / LBAlo	& This is CHS / LBA28 / LBA48 specific.\\
+4	& Cylinder Low / LBAmid	& Partial Disk Sector address.\\
+5	& Cylinder High / LBAhi	& Partial Disk Sector address.\\
+6	& Drive / Head Port	& Used to select a drive and/or head. May supports extra address/flag bits.\\
+7	& Command port / Regular Status port	& Used to send commands or read the current status.\\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+
+
+\subsubsection{DMA部分的处理}
+
+\subsubsection{特殊边界情形处理}
 
 
 
