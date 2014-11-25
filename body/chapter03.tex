@@ -46,7 +46,7 @@
 
 
 
-\section{Secure KVM安全嵌套式虚拟化系统的设计与实现}
+\section{Secure KVM系统的设计}
 
 \subsection{嵌套式虚拟化}
 
@@ -91,20 +91,20 @@ x86处理器硬件上主要有两个结构对非根模式下的运行进行控�
 
 
 
-\subsection{客户虚拟机内存安全的保证}
+\section{对客户虚拟机内存的安全保护}
 
 
 
-\subsubsection{基本原理}
+\subsection{基本原理}
 
-\subsubsection{特殊边界情形处理}
-
-
+\subsection{特殊边界情形处理}
 
 
-\subsection{客户虚拟机磁盘数据安全的保证}
 
-\subsubsection{基本原理}
+
+\section{对客户虚拟机磁盘数据的安全保护}
+
+\subsection{基本原理}
 
 在正常的磁盘虚拟化过程中，磁盘读取即是虚拟机监控器将被请求的磁盘数据块从磁盘映像中取出并放置到客户虚拟机指定的内存位置。反之，磁盘写入则是虚拟机监控器从客户虚拟机指定内存位置获取待写数据并存储到磁盘映像相应位置。
 
@@ -126,7 +126,7 @@ x86处理器硬件上主要有两个结构对非根模式下的运行进行控�
 对于第四个条件，L2始终接触到的均是明文数据，其不会觉察到L0和L1在事关其磁盘数据安全上做出的斗争。对于L1，除了观察到磁盘映像经过加密这一事实外，在其不威胁L2磁盘数据安全的前提下，其所经历的行为也和正常磁盘虚拟化过程无二致。
 
 
-\subsubsection{PIO部分的处理}
+\subsection{PIO读部分的处理}
 
 在L2客户操作系统刚启动时，其通过PIO（Programmed Input/Output）的方式读取磁盘数据。PIO是一种同步的简单磁盘数据访问方式。x86处理器上有256个IO端口，其中的一部分被预留给了IDE控制器，如下表所示。而处理器通过x86 ISA中的IO指令（in、out、ins、outs）来读写这些IO端口，来达到访问磁盘数据的目的。PIO的过程是同步的，处理器在执行这些IO指令时不能进行其他工作。
 
@@ -153,9 +153,19 @@ Port Offset	& Function & Description\\
 
 
 
-\subsubsection{DMA部分的处理}
+\subsection{DMA读部分的处理}
 
-\subsubsection{特殊边界情形处理}
+\subsection{DMA写部分的处理}
+
+\subsection{多层内存地址转换的处理}
+
+\subsection{缺失内存地址转换的处理}
+
+\subsection{加解密方案与数据完整性保护}
+
+
+
+
 
 
 
