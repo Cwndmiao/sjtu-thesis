@@ -96,11 +96,13 @@ vCPU-Bal方法具有以下优点：
 
 并行应用程序在FlexCore系统之上的一个典型执行过程由以下三个阶段组成：
 
-1）vCPU ballooning前：由于vCPU上的工作负荷不重，vCPU之间的交互（竞争自旋锁或互发中断）也不多，客户虚拟机按照起先默认分配的vCPU数目运行。
+\begin{enumerate}
+\item vCPU ballooning前：由于vCPU上的工作负荷不重，vCPU之间的交互（竞争自旋锁或互发中断）也不多，客户虚拟机按照起先默认分配的vCPU数目运行。
+\item vCPU ballooning发生：随着越来越多的vCPU转为可运行状态，vCPU开始在物理核上竞争运行机会且愈演愈烈，vCPU之间的交互也越来越频繁，自旋锁抢占和函数调用IPI的频繁发生使得大量CPU时间被耗费在了无效忙等上。此时，vCPU ballooning被付诸实施。
+\item vCPU ballooning后：由于vCPU数量得到了显著减少，每个vCPU可以在物理核上独占运行。自旋锁和函数调用IPI的性能恢复到了在真实硬件上的水平，耗费在无效忙等上的时间显著减少，大部分的CPU时间被利用在了实际计算工作中。
+\end{enumerate}
 
-2）vCPU ballooning中：随着越来越多的vCPU转为可运行状态，vCPU开始在物理核上竞争运行机会，vCPU之间的交互也越来越频繁，
-
-3）vCPU ballooning后：
+为了能较好支持vCPU ballooning，FlexCore需要重点解决以下几个难点，一是如何判定进行vCPU ballooning的时机，即何时采取vCPU ballooning，二是怎样在客户虚拟机正在运行时改变它的vCPU数目，即怎样进行vCPU ballooning，最后是如何在虚拟机监控器和客户虚拟机之间构建一条高效的通信通道。
 
 \subsection{系统总体架构}
 
@@ -120,13 +122,15 @@ Intel在其最新的支持硬件虚拟化的CPU中添加了暂停-循环退出�
 
 而无论是IPI发送者忙等接收者处理函数返回，还是vCPU在拿锁前自旋，其在实现中为了减少对CPU高速缓存行造成的竞争，在每次尝试失败后均会执行pause指令。如果其尝试失败次数超过PLE\_Window，在随后发生VMExit时便能被监测到。因此，一段时间内较高的PLE次数，可以说明系统有大量的CPU时间被耗费在双重调度导致的无用忙等上，此时应该用vCPU-Bal方法来缓解vCPU间的无谓竞争，提高系统的实际运行效率。
 
-现阶段vCPU-Bal控制中心依据每个VM的权重来计算其应分配的vCPU个数。以下公式，具体说明了每个VM获分配vCPU数目$N_{vCPU}$的计算过程，其中$W_{VMi}$表示系统中第i个VM的权重，$T_{pCPU}$表示系统中所有物理CPU的个数。
+现阶段vCPU-Bal控制中心依据每个VM的权重来计算其应分配的vCPU个数。以下公式，具体说明了每个VM获分配vCPU数目$N_{vCPUi}$的计算过程，其中$W_{VMi}$表示系统中第i个VM的权重，$T_{pCPU}$表示系统中所有物理CPU的个数。
 
 \begin{equation*}
-N_{vCPU} = \frac{W_{VMi} * T_{pCPU}}{\sum_{i=1}^n W_{VMi}}
+N_{vCPUi} = \frac{W_{VMi} * T_{pCPU}}{\sum_{i=1}^n W_{VMi}}
 \end{equation*}
 
 假设某个12核系统中运行有两个VM，VM1和VM2均有12个vCPU，权重分别为512和256，那么vCPU-Bal控制中心将把VM1的vCPU数减少为8，把VM2的vCPU数减少为4。
+
+为了跟踪系统运行的性能状况，我们在VMM中添加了PLE处理函数，对每个vCPU统计其在最近3秒内每秒发生PLE的次数。此外，vCPU-Bal控制中心在初始化时会新建一个内核线程。该线程每隔$T_{check\_interval}$时间遍历系统中所有的vCPU，若某vCPU在连续3秒内发生PLE次数与其被调度次数之比均超过了设定的阈值，则认为该vCPU上竞争情况严重。如果对于系统中某一VM，其超过半数的vCPU均处于严重竞争状态，则认为双重调度已让大量CPU时间花费在自旋忙等上，系统的整体性能被严重降低，此时vCPU-Bal控制中心将向每个VM中发送虚拟中断，通知其减少vCPU数目。
 
 \begin{figure}[!htp]
   \centering
@@ -142,15 +146,21 @@ N_{vCPU} = \frac{W_{VMi} * T_{pCPU}}{\sum_{i=1}^n W_{VMi}}
 
 现阶段该内核代理利用Linux自带的CPU热插拔（CPU Hotplug）特性[13]来实现。在动态减少vCPU时，其首先将该vCPU在全局位图中标记为离线，这样IPI广播等需要全局vCPU参与的操作将会把该vCPU排除在外。然后，内核代理会等待一个宽限期以回收RCU释放的资源，因为此刻其他vCPU上可能的对这些资源的引用均已结束。随即内核代理暂停先前在该vCPU上运行的Per-CPU内核线程并将该vCPU运行队列中的其他普通线程迁移到其他vCPU，最后其调用各Linux子系统注册的回调函数并执行halt指令将该vCPU置于停机状态。而这条halt指令能触发VMExit，会被VMM监测到，vCPU-Bal控制中心据此判定该vCPU已被成功离线。
 
+为了减少vCPU ballooning自身的时间开销，我们在FlexCore中引入了若干优化。CPU热插拔中用来离线CPU的原生接口，``cpu\_down''，接受待离线的CPU编号作为唯一参数，被用来离线客户虚拟机中某一单独vCPU。然而在绝大多数的vCPU ballooning场景中，对vCPU数目的调整是大于一的。另外，一旦vCPU ballooning被实施，这说明系统中vCPU在物理核上的竞争已经十分严重，因此vCPU ballooning的过程应该尽早结束。如果我们将``cpu\_down''在待离线的vCPU上按顺序逐一实施，根据实验结果离线6个vCPU将花费近7s的时间。通过性能采样分析，我们发现其中大部分的时间被用于处理每个vCPU上的Per-CPU内核线程（每个vCPU上约耗费600ms）。在``cpu\_down''被执行的过程中，其不断检查每个内核线程的运行状态直到他们都进入休眠状态（所有的延迟任务均处理完成）。事实上，对Per-CPU内核线程的状态检查可以在所有待离线vCPU上并行执行，因为几乎所有的内核线程都是被用来处理延迟任务，而由于vCPU将要被离线没有新的延迟任务会被加入。在FlexCore的实现中，内核代理一旦收到控制中心发来的vCPU ballooning指令，即会向待离线vCPU发送函数调用IPI，命令其预先开始处理Per-CPU内核线程。采用此优化策略后，在同样配置环境下耗费在vCPU ballooning过程中的时间被减少到了3.5s。理论上，RCU中宽限期的等待也可以被并行化。但是，此优化需要对RCU子系统进行大量改动却在总耗费时间中占据比例不大，因此我们将其留作未来工作。
+
 vCPU-Bal内核代理会优先离线编号较大的vCPU，如某VM中有0-11共计12个vCPU，而控制中心需要将其vCPU数减为6，内核代理会将以上流程在6-11vCPU上逐一运行。
+
+此外，由于Qemu与客户虚拟机之间联系紧密，在FlexCore中需要对Qemu进行适当修改以适应vCPU ballooning。Qemu为客户虚拟机模拟所有的IO外设，且每个vCPU其实起源于Qemu创建（fork）出的一个用户态线程。必须保证被模拟IO外设的中断不能被错误传递到已被离线的vCPU之上。通过将vCPU ballooning信息暴露给Qemu，FlexCore始终将设备中断导向至正常vCPU。且一旦某待离线vCPU被检测到发出halt指令，其对应的Qemu用户态线程将会在条件变量上被置于睡眠状态。
 
 \subsection{介于控制中心和内核代理间的通信模块}
 
 VMM中的vCPU-Bal控制中心与VM中的vCPU-Bal内核代理需要进行双向通信，此功能由构建在他们中间的通信模块来完成。
 
+在很多情形下，控制中心和内核代理间的双向通信是必须的。vCPU-Bal控制中心需要告知内核代理何时进行vCPU ballooning以及调整后的vCPU数目。对于vCPU-Bal内核代理，它需要向控制中心报告处理进度和传递调试信息。
+
 为了达到目的，我们采用了类似XenStore[1]机制的方法，在KVM用作设备模拟的Qemu中添加了一个虚拟PCI设备，并在VM中为其编写了驱动。驱动初始化过程中会为该设备分配中断号，并预留两个内存页作为和vCPU-Bal控制中心之间的共享内存。驱动初始化完成后，该中断号和内存页物理地址将通过带特殊参数的vmcall[12]指令告知VMM，VMM随即将内存页映射至其地址空间，通信通道自此建立完成。
 
-若vCPU-Bal控制中心欲发送消息给vCPU-Bal内核代理，其可以将消息内容写入第一个内存页，并以注入虚拟中断的方式来通知VM。反之，vCPU-Bal内核代理可以将消息内容写入第二个内存页，并执行带特殊参数的vmcall指令来通知VMM。
+若vCPU-Bal控制中心欲发送消息给vCPU-Bal内核代理，其可以将消息内容写入第一个内存页，并以注入虚拟中断的方式来通知VM。由于对每个客户虚拟机，vCPU0总不可能被离线，此虚拟中断将总是被导向至vCPU0。反之，vCPU-Bal内核代理可以将消息内容写入第二个内存页，并执行带特殊参数的vmcall指令来通知VMM。
 
 
 
@@ -158,18 +168,92 @@ VMM中的vCPU-Bal控制中心与VM中的vCPU-Bal内核代理需要进行双向�
 
 \subsection{实验环境}
 
+实验在一台Dell R810服务器上进行，该机器配有两个六核Intel Xeon E7-4807处理器和32GB物理内存。为了避免超线程对结果稳定性造成影响，在实验中我们将其关闭。
+
+实验采用KVM[2]作为虚拟化平台，VMM以及VM中操作系统的内核均为Linux 3.13.3，采用的Qemu版本为1.7.0。在初始情况下，每个VM均配有12个vCPU和8GB内存，且具有相同的权重。
+
+PARSEC[7]是一个由若干多线程应用程序组成的测试程序集，我们从中选取了dedup、vips、swaptions和streamcluster这四个程序作为测试用例。这些并行测试程序在运行时均会频繁请求操作系统各子系统的服务，能较好地反映VM在真实应用场景下的性能。该实验中，每个测试程序的线程数被设为12，且采用native输入集。为了减轻磁盘IO对实验结果的影响，我们预先将输入集载入了缓存。
+
+以下实验中将测试不同用例分别在两种配置中的运行性能，分别为：
+
+\begin{enumerate}
+\item 2VM：系统中有2个VM，共计24个vCPU，VMM中采用默认的调度策略，VM中运行未经修改的Linux。实验时，2个VM中同时运行相同的测试用例。
+\item 2VM + FlexCore：该配置基本同上，但在VMM中采用vCPU-Bal调度策略，VM中操作系统加载vCPU-Bal内核代理，能动态调整vCPU数目。此外，PLE\_Gap和PLE\_Window参数分别被设置为128和4096。以下简称FlexCore。
+\end{enumerate}
+
+
 \subsection{总运行时间比较}
+
+\begin{figure}[!htp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{chap4/7.png}
+  \bicaption[fig:7]{不同配置下总运行时间和内核态运行时间的比较}{不同配置下总运行时间和内核态运行时间的比较}{Fig}{Comparison on total execution time and kernel time between 2VM case and FlexCore case}
+\end{figure}
+
+图7比较了各测试用例在2VM和2VM + FlexCore两种配置下的总运行时间和内核态运行时间。FlexCore将dedup、vips、swaptions和streamcluster的总运行时间分别缩短了79.6\%、54.1\%、35.4\%和42.4\%（图7每项左方实心柱体），平均性能提升为52.9\%。FlexCore取得性能提升的主要原因可以归结为内核态运行时间的大量下降，分别为2VM配置下的9.7\%、11.1\%、10.7\%和6.6\%（图7每项右方空心柱体）。
 
 \subsection{运行时间占比比较}
 
+\begin{figure}[!htp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{chap4/8.png}
+  \bicaption[fig:8]{不同配置下总运行时间分解比较}{不同配置下总运行时间分解比较}{Fig}{Comparison on execution time breakdown between 2VM case and FlexCore case}
+\end{figure}
+
+图8比较了各测试用例在2VM和2VM + FlexCore两种配置下耗费在函数调用IPI、自旋锁上的时间占总CPU时间的比例。在2VM配置下，系统中大量的vCPU竞争运行机会，使得正在进行关键操作的vCPU被抢占或不能被及时调度，让IPI发送者和自旋锁等待者长时间忙等自旋，以dedup为例，其在这两项上花费时间占比分别达到了71\%和15\%。而在2VM + FlexCore配置下，通过动态减少vCPU数，每个vCPU能独占运行，其在无用操作上耗费的时间将大大减少，在dedup中，花费时间占比分别降低为14\%和4\%。此外，在其他测试用例中，花费时间占比均有大幅度下降。
+
+Dedup，被选取的测试应用程序之一，使用一系列交互线程从输入文件中读取数据，对其进行去重并压缩。在程序运行过程中，dedup会对客户虚拟机操作系统的虚拟内存子系统和虚拟文件子系统产生较大测试压力。Dedup会在应用程序堆上频繁分配和释放小块内存，其中用到了自旋锁来确保线程对应用程序内存地址空间的独占访问，另外当虚拟地址映射有变动时需要用IPI来通知其他核进行相应更新。Dedup还需要读写大量的磁盘数据，其中也包括了众多自旋锁同步操作。因此，双重调度会对dedup程序的性能造成致命影响，而通过vCPU ballooning来减少无效忙等，dedup的运行效率得到了较大幅度的提升。
+
+
+
 \subsection{PLE次数比较}
+
+\begin{table}[!htbp]
+\caption{Reduction on PLE times in FlexCore}\label{tab:ple}
+\vspace{5mm}
+\centering
+\begin{threeparttable}
+\begin{tabular}{cccc}
+\toprule
+Application & PLE in 2VM & PLE in FlexCore & Reduction\\
+\midrule
+  dedup & 9.52E7\tnote{1} & 1.90E6 & 98\%\\
+  vips & 6.48E7 & 9.75E6 & 85\%\\
+  swaptions & 8.13E7 & 2.19E7 & 73\%\\
+  streamcluster & 1.57E8 & 3.61E7 & 77\%\\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}
+\footnotesize
+\item[1] Note: PLE times are donated in scientific notation.
+\end{tablenotes}
+\end{threeparttable}
+\end{table}
+
+每次vCPU发生PLE退出，说明该vCPU已进行了一段时间的自旋忙等。而PLE次数的多少，间接反映了系统花在无用操作上的时间，可以体现运行效率的高低。表1比较了两种配置下运行测试用例时发生的PLE次数，可以看出，由于vCPU-Bal方法使得vCPU独占运行，PLE次数较2VM配置均有大幅降低。
+
+实际上，对比vCPU ballooning实施前后系统中PLE发生的频率，前者要远远高于后者。举例来说，在swaptions这个测试程序中，vCPU ballooning前后的PLE频率分别大约是5E5次/秒和1E4次/秒，前者约为后者的50倍。然而，根据\ref{tab:ple}所示，FlexCore配置下PLE的总量却仅为2VM配置下的四分之一。其中原因在于，绝大多数的PLE是在vCPU ballooning实施之前被触发，而等到vCPU数目得到减少时，接近四分之一的总运行时间已经过去了。
 
 \subsection{实验总结}
 
-
+从以上实验结果可以看出，vCPU-Bal方法能在系统资源竞争激烈时，通过降低vCPU数来主动规避，尽可能避免在自旋忙等上浪费CPU时间，保证VM中应用程序的执行性能。实验结果显示，FlexCore可以取得约50\%的平均性能提升。
 
 \section{相关研究工作分析}
 
+随着虚拟化技术和云计算的普及，多VM整合运行时的性能问题正逐渐受到学术界的关注，成为研究热点。为了提高虚拟机的运行性能，以往研究者提出了许多相关工作。
+
+Uhlig等人在[11]提到了自旋锁持有者抢占现象，并通过修改VM操作系统中自旋锁的实现来将是否持有锁以及剩余临界区时间等信息暴露给VMM调度器。若当前vCPU在用完时间片后，仍持有自旋锁，VMM调度器将预支时间片并延迟抢占该vCPU。该方案的不足之处在于难以准确获取临界区剩余时间，且延迟抢占可能增加系统上其他服务的时延。
+
+为了减轻自旋锁持有者抢占现象带来的性能下降，[4][10]提出了协同调度（Co-scheduling）策略。该方案同时调度相互具有协作关系的多个vCPU，在所有CPU上统一划分时间片，并将一个VM中所有vCPU调度到不同CPU上同时运行，以达到降低同步延迟的目的。此方案虽然减少了双重调度带来的自旋忙等，但可能造成CPU时间碎片化，即散布于调度轮次间的细微时间片得不到利用，和优先级反转等新问题。
+
+Kim等人在[8]提出了基于IPI的协同调度策略（Demand-based Co-scheduling），依据IPI来推测VM的运行状态消除语义隔阂，将IPI的发送者和接收者视作紧急vCPU并优先调度。此方案能提高基于IPI的同步原语性能，但没有关注自旋锁持有者抢占现象，且可能造成优先级反转。
+
+不同于以往研究者提出的方案，vCPU-Bal方法针对问题产生的根源，通过在运行时动态调整VM中vCPU的数目，从而主动避免双重调度带来的性能损耗，且没有引入CPU时间碎片化和优先级反转这些新问题。
 
 
-\section{总结与展望}
+
+\section{本章小结}
+
+本文关注虚拟化环境中双重调度带来的问题，详细分析了函数调用IPI延迟和自旋锁持有者抢占这两种严重降低性能的现象，并针对此提出了vCPU-Bal方法，通过在运行时动态调整VM中vCPU的数目让vCPU独占运行，从根源上缓解vCPU之间的竞争，减少耗费在自旋忙等上的时间，提高系统的运行效率。PARSEC程序测试结果显示，此调度算法取得了50\%的平均性能提升，较好地解决了双重调度困境。
+
+vCPU-Bal方法的现有实现通过比较vCPU最近一段时间内发生PLE的次数和其被调度次数，来决定是否调整vCPU数目。而在发出VCPU-Bal命令前，系统已经有部分时间被浪费。如何选取更早更准确的vCPU-Bal时机，且不局限于VM权重来达到全局vCPU数的最优分配，是作者未来的工作。
