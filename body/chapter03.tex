@@ -128,9 +128,9 @@ x86处理器硬件上主要有两个结构对非根模式下的运行进行控�
 
 \subsection{PIO读部分的处理}
 
-在L2客户操作系统刚启动时，其通过PIO（Programmed Input/Output）的方式读取磁盘数据。PIO是一种同步的简单磁盘数据访问方式。x86处理器上有256个IO端口，其中的一部分被预留给了IDE控制器，如下表所示。而处理器通过x86 ISA中的IO指令（in、out、ins、outs）来读写这些IO端口，来达到访问磁盘数据的目的。PIO的过程是同步的，处理器在执行这些IO指令时不能进行其他工作。
+在L2客户操作系统刚启动时，其通过PIO（Programmed Input/Output）的方式读取磁盘数据。PIO是一种同步的简单磁盘数据访问方式。x86处理器上有256个IO端口，其中的一部分被预留给了IDE控制器，如下表所示。而处理器通过x86 ISA中的IO指令（in、out、ins、outs）来读写这些IO端口，来达到访问磁盘数据的目的。PIO的过程是同步的，处理器在执行这些IO指令时不能进行其他工作。待真正进行数据读取的ins(或带req指令前缀的ins指令)执行结束后，磁盘数据即存在于内存中的对应地址。
 
-\begin{table}[!htpb]
+\begin{table}[htpb]
 \bicaption[tab:pio]{磁盘PIO对IO端口的使用说明表}{磁盘PIO对IO端口的使用说明表}{Table}{x86 IO port used in disk PIO}
 \centering
 \resizebox{\textwidth}{!}{
@@ -151,8 +151,34 @@ Port Offset	& Function & Description\\
 }
 \end{table}
 
-以下是一个典型的DMA读数据过程
+以下是一个典型的PIO读数据过程。L2先进行IDE主盘/从盘选择，并将之与扇区逻辑块地址（LBA，Logical Block Addressing）高4位作或运算，写入0x1F6端口。随后，L2向0x1F1中写入一个零字节，向0x1F2中写入待读取扇区的数量，并把剩余的LBA地址部分分段写入至0x1F3\~0x1F5。待地址和长度信息写入完毕后，L2向命令端口0x1F7发出读数据指示并轮询等待设备就绪，最后执行rep ins指令接收磁盘数据。
 
+\begin{enumerate}
+\item Send 0xE0 for the ``master'' or 0xF0 for the ``slave'', ORed with the highest 4 bits of the LBA to port 0x1F6: outb(0x1F6, 0xE0 | (slavebit << 4) | ((LBA >> 24) & 0x0F))
+\item Send a NULL byte to port 0x1F1, if you like (it is ignored and wastes lots of CPU time): outb(0x1F1, 0x00)
+\item Send the sectorcount to port 0x1F2: outb(0x1F2, (unsigned char) count)
+\item Send the low 8 bits of the LBA to port 0x1F3: outb(0x1F3, (unsigned char) LBA))
+\item Send the next 8 bits of the LBA to port 0x1F4: outb(0x1F4, (unsigned char)(LBA >> 8))
+\item Send the next 8 bits of the LBA to port 0x1F5: outb(0x1F5, (unsigned char)(LBA >> 16))
+\item Send the ``READ SECTORS'' command (0x20) to port 0x1F7: outb(0x1F7, 0x20)
+\item Wait for an IRQ or poll.
+\item Transfer 256 words, a word at a time, into your buffer from I/O port 0x1F0. (In assembler, REP INSW works well for this.)
+\item Then loop back to waiting for the next IRQ (or poll again -- see next note) for each successive sector.
+\end{enumerate}
+
+在非嵌套式虚拟化环境下，每条IO指令均会引发VMExit，最终执行流会转移至Qemu并由其对这些IO指令进行模拟。Qemu对除最后一条rep ins指令外的其他IO指令，均只做简单的簿记工作。到了最后的rep ins指令时，Qemu会根据之前记录的扇区地址和数量信息，从磁盘映像对应位置用pread读出数据并写入虚拟机内存空间对应位置，最后Qemu会调整虚拟机指令指针寄存器rip的数值以恢复虚拟机从下一条指令执行。
+
+由于存放在L1原虚拟机监控器中的L2磁盘映像是经过加密的，L1向L2内存空间中写入的PIO磁盘数据便也是以密文形式存在。为了让L2客户虚拟机正常运行，我们必须适时地对密文PIO磁盘数据进行解密。这个数据解密的时机，便在L1向L2内存空间写入数据后正要恢复L2执行时。这时，待读取磁盘数据已经完整存在于L2内存空间而L2还未能访问这部分数据，且L1用来恢复L2执行的vmresume指令会产生到L0嵌套式虚拟化层的陷入。此过程用UML顺序图可以表示如下。
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=0.7\textwidth]{chap3/pio_read.png}
+  \bicaption[fig:pio_read]{嵌套式虚拟化示意图}{嵌套式虚拟化示意图}{Fig}{Illustration on nested virtualization}
+\end{figure}
+
+L2客户虚拟机进行PIO磁盘读取的粒度是8个磁盘扇区，即每次读取连续的8个普通磁盘扇区，正好是一个对齐的内存页（512B * 8 = 4KB）。L0对其进行解密的过程即为将对应的存放加密磁盘数据的内存页面映射到自己的地址空间，然后用事先约定好的密钥在原地址进行解密操作，其中所涉及到的多层内存地址转换、加解密算法等细节问题将在接下来的章节中进行详细论述。
+
+此外，在原型系统的开发过程中，于PIO层面，我们仅发现有读取行为而未发现磁盘写入。我们猜测PIO读取仅用于Linux初期启动过程中grub将操作系统内核等必要数据载入客户虚拟机内存，待到Linux启动完成后，所有的磁盘操作将转由效率更高的DMA来进行，这部分的论述将在接下来的两节中完成。
 
 \subsection{DMA读部分的处理}
 
@@ -164,7 +190,84 @@ TODO: Tranpoline Buffer
 
 \subsection{多层内存地址转换的处理}
 
-TODO: Merge two EPTs
+在嵌套式虚拟化环境下，各层内存地址之间的转化关系尤为复杂，其中经常涉及到的内存地址有以下几种。
+
+\begin{enumerate}
+\item L2 GVA，即L2 Guest Virtual Address，L2客户虚拟机中的线性虚拟地址，L2中的应用程序和操作系统内核使用此地址访问内存
+\item L2 GPA，即L2 Guest Physical Address，L2客户虚拟机中的物理地址，可以由L2 GVA通过页表转换得到
+\item L1 GPA，即L1 Guest Physical Address，L1虚拟机监控器中的物理地址
+\item L0 HVA，即L0 Host Virtual Address，L0嵌套式虚拟化层中的线性虚拟地址，L0通过此地址来访问机器上所有的内存空间
+\item L0 HPA，即L0 Host Physical Address，L0嵌套式虚拟化层中的物理地址或机器地址，可以由L0 GVA通过页表转换得到
+\end{enumerate}
+
+在如此多种内存地址中间，又有若干种页表（或辅助扩展页表）来控制它们之间的转换关系，如图\ref{fig:paging}所示。
+
+\begin{enumerate}
+\item L2 PT，负责L2 GVA到L2 GPA的转换
+\item L1 EPT12，负责L2 GPA到L1 GPA的转换
+\item L0 EPT01，负责L1 GPA到L0 HPA的转换
+\item L0 EPT02，负责L2 GPA到L0 HPA的转换
+\item L0 PT，负责L0 HVA到L0 HPA的转换
+\end{enumerate}
+
+从逻辑上来说，L2客户虚拟机运行时存在着三层地址转换关系，L2 GVA到L2 GPA的转换，L2 GPA到L1 GPA的转换，和L1 GPA到L0 HPA的转换。但是，CPU在硬件上仅仅支持两层地址转换关系，即普通页表和辅助扩展页表。因此，L0嵌套式虚拟化层需要对后面两层地址转换关系进行压缩合并，在L2客户虚拟机运行时CPU实际使用的辅助扩展页表是EPT02。
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=0.7\textwidth]{chap3/paging.png}
+  \bicaption[fig:paging]{多层内存地址转换示意图}{多层内存地址转换示意图}{Fig}{Illustration on Multi-dimensional Paging}
+\end{figure}
+
+在L0嵌套式虚拟化层进行磁盘数据加解密时，必须适时地进行内存地址之间的转换。如负责L2 GPA到L1 GPA转换的EPT12表，其根地址和表项中的地址数据均以L1 GPA的形式存在。又如L2客户虚拟机进行DMA操作时使用的PRDT表，其中的表项地址数据以L2 GPA的形式存在。下文将以L2 GPA到L0 HVA为例，详述其中的地址转换过程。
+
+L0先去EPT02中查找L2 GPA到L0 HPA的对应关系，此功能由ept02\_p2m函数实现。ept02\_p2m先从当前VMCS中读出EPT02表的根地址，然后模拟硬件查表行为，将L2 GPA划分为4段并分别去索引EPT表的每一级。如EPT02表中每一级表项都存在且合法，ept02\_p2m将返回转换后的L0 HPA，否则ept02\_p2m将返回0表示此次尝试失败。
+
+\begin{lstlisting}[language={C}, caption={ept02\_p2m实现源代码}]
+static unsigned long ept02_p2m(unsigned long pfn) {
+    unsigned long ept_hpa = vmcs_readl(EPT_POINTER);
+    int l4i, l3i, l2i, l1i;
+    unsigned long mfn;
+    ept_entry_t *ept_hvm, *cur_epte, *l2_epte;
+
+    ept_hvm = (ept_entry_t*)pfn_to_kaddr(ept_hpa >> PAGE_SHIFT);
+
+    l4i = (pfn >> 27) & 0x1ff;
+    l3i = (pfn >> 18) & 0x1ff;
+    l2i = (pfn >> 9) & 0x1ff;
+    l1i = pfn & 0x1ff;
+
+    /* L4 */
+    cur_epte = ept_hvm + l4i;
+    if (!(cur_epte->epte & 0x7)) {
+        return 0;
+    }
+    
+    /* L3 */
+    cur_epte = (ept_entry_t*)(pfn_to_kaddr(cur_epte->mfn)) + l3i;
+    if (!(cur_epte->epte & 0x7)) {
+        return 0;
+    }
+    if (cur_epte->sp_avail) {
+    	/* 1G super page */
+        mfn = cur_epte->mfn + (pfn & 0x3ffff);
+        return mfn;
+    }
+
+    /* L2 */
+    ......
+    /* L1 */
+    ......
+
+    mfn = cur_epte->mfn;
+    return mfn;
+}
+\end{lstlisting}
+
+但是在KVM中，为了节省内存开销，EPT表采用按需填充（populate on demand）的方式进行更新，即EPT在客户虚拟机刚启动时仅为一张空表，其中内容只有等到页错误发生时才会被增添或修改。这个特性会给内存地址转换带来问题，使得EPT02中的地址映射关系可能是不完整的，因为此时L2客户虚拟机很有可能还没有访问过这部分内存页，这些L2 GPA在EPT02表中的对应项是空缺的。
+
+如果发现EPT02中有表项缺失的情况，L0会模拟EPT02表的构建过程，从EPT01和EPT12中读取原始数据并进行合并，从而构造出L2 GPA到L0 HPA的转换关系。从EPT01和EPT12中读取数据的过程和ept02\_p2m类似，此处不再赘述。
+
+有了L2 GPA对应的L0 HPA，L0可以使用pfn\_to\_kaddr等功能函数将其再转化为线性虚拟地址，便可以进行访问。
 
 \subsection{缺失内存地址转换的处理}
 
