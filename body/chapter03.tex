@@ -267,11 +267,53 @@ static unsigned long ept02_p2m(unsigned long pfn) {
 
 如果发现EPT02中有表项缺失的情况，L0会模拟EPT02表的构建过程，从EPT01和EPT12中读取原始数据并进行合并，从而构造出L2 GPA到L0 HPA的转换关系。从EPT01和EPT12中读取数据的过程和ept02\_p2m类似，此处不再赘述。
 
-有了L2 GPA对应的L0 HPA，L0可以使用pfn\_to\_kaddr等功能函数将其再转化为线性虚拟地址，便可以进行访问。
+有了L2 GPA对应的L0 HPA，L0可以使用pfn\_to\_kaddr等功能函数将其再转化为线性虚拟地址，便可以对该内存区域进行访问。
 
 \subsection{缺失内存地址转换的处理}
 
-TODO: Virtual interrupt
+在大部分情况下，直接从EPT02表中获取L2 GPA到L0 HPA的映射关系，或者退而求其次，从EPT01和EPT12中的数据整合出L2 GPA到L0 HPA的映射关系，是满足要求的。但在某些极端情况下，这种方式仍然会产生问题。
+
+现假设L2客户虚拟机发起了一次DMA读数据请求，并在PRDT表中指定物理地址(L2 GPA)为0x12345000~\~0x12346000的内存区域作为数据缓冲区。但是，L2尚未访问过这部分内存区域，所以EPT02表中不会存在到L0 HPA的映射关系。同理，EPT12表中也不会存在到L1 GPA的映射关系（EPT01表中可能存在L1 GPA到L0 HPA的映射关系，取决于此时L1有无将磁盘数据填入缓冲区），此时便不能取得L2 GPA到L0 HPA的映射关系，无法对原先加密的磁盘数据进行解密。
+
+有两种方案可以被用来解决该困境，分别为主动式和被动式。
+
+主动式解决方案在发现内存地址转换缺失时，通过向L1注入虚拟缺页故障，来诱使L1填补EPT12表。待到执行流从L1返回后，EPT12表中便已存在L2 GPA到L1 GPA的映射关系，此时再将其与EPT01表中的数据合并，便可以获取L2 GPA到L0 HPA的映射关系。以上过程在inject\_virtual\_ept\_fault函数中实现。
+
+\begin{lstlisting}[language={C}, caption={inject\_virtual\_ept\_fault实现源代码}]
+static int vmx_handle_exit(struct kvm_vcpu *vcpu) {
+	......
+
+    if (is_guest_mode(vcpu) && vmx->inject_virtual_ept_fault) {
+        inject_virtual_ept_fault();
+        return 1;
+    }
+
+	......
+}
+
+static void inject_virtual_ept_fault() {	
+    struct vmcs12* vmcs12;
+    struct dma_entry* dma = NULL;
+
+    /* switch execution flow back to L1 */
+    nested_vmx_vmexit(vcpu);
+    vmcs12 = get_vmcs12(vcpu);
+    dma = (struct dma_entry*)container_of(vcpu->dma_list.next, struct dma_entry, next_entry);
+
+    /* fake an ept violation */
+    vmcs12->vm_exit_reason = EXIT_REASON_EPT_VIOLATION;
+    vmcs12->exit_qualification = 0x0000000000000003;
+    vmcs12->guest_physical_address = dma->dma_addr;
+
+    vmx->inject_virtual_ept_fault = 0;
+}
+\end{lstlisting}
+
+在L0处理虚拟机陷入的函数vmx\_handle\_exit中，一旦发现vmx->inject\_virtual\_ept\_fault标志位被设置，便会调用inject\_virtual\_ept\_fault向L1中注入虚拟缺页故障。inject\_virtual\_ept\_fault首先调用nested\_vmx\_vmexit让L1在处理器下次进入非根模式时获得运行机会。由于在嵌套式虚拟化环境下，L0对于L1是透明的，L1在重新获得运行机会后会认为是L2发生了虚拟机陷入，便会从VMCS12中读取陷入的原因并进行相应处理。因此，inject\_virtual\_ept\_fault还必须在VMCS12中模拟出陷入现场，这是通过设置VMCS12中的三个关键字段vm\_exit\_reason、exit\_qualification和guest\_physical\_address（即L2 GPA）来达到。最后，inject\_virtual\_ept\_fault清除虚拟缺页故障注入标志位，L1继续运行并填补EPT12表中空缺的映射关系。
+
+另一种方案是通过被动方式来解决该问题。此方案是基于这样的考虑，L2客户虚拟机要访问磁盘数据，EPT02表中必须要存在相应L2 GPA到L0 HPA的映射关系。因此，我们可以延迟对转换缺失的L2内存区域的解密工作，将其暂存至链表中，并对EPT02表的更新进行监视。一旦，EPT02表中增添了新的映射关系，说明L2即将对这部分内存区域进行访问，此时可以继续之前未完成的数据解密工作，并将已完成解密的内存区域从暂存链表中移除。
+
+我们对以上提及的主动式方案和被动式方案均进行了实现，经过性能测试，发现主动注入虚拟缺页故障的方案性能要远超被动解密方案。这是由于EPT02表的更新是一个进行比较频繁的操作，一旦对其设置了监视，每次EPT02表更新发生时均需要对待解密链表进行遍历。而L2由于操作系统的页缓冲预取策略，不一定会立即访问读取后的磁盘数据，这便会造成待解密链表中经常积累至超过万项的带解密内存页，每次对其进行遍历开销巨大。最终，在Secure KVM系统的实现中，我们采取了主动式方案。
 
 \subsection{加解密方案与数据完整性保护}
 
