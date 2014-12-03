@@ -317,17 +317,53 @@ static void inject_virtual_ept_fault() {
 
 \subsection{加解密方案与数据完整性保护}
 
-Secure KVM系统中采用了AES（Advanced Encryption Standard）算法对L2磁盘映像数据进行加解密。AES在密码学领域又被称为Rijndael加密法，是美国联邦政府采用的一种区块加密标准。AES算法被用来代替先前的DES（Data Encryption Standard），已经被多方分析研究且广为全世界所使用。经过五年的甄选流程，AES由美国国家标准与技术研究院于2001年发布，并在2002年成为有效标准。2006年，AES已然成为对称密钥加密中最流行的算法之一。
+Secure KVM系统中采用了AES（Advanced Encryption Standard） ECB算法对L2磁盘映像数据进行加解密。AES在密码学领域又被称为Rijndael加密法，是美国联邦政府采用的一种区块加密标准。AES算法被用来代替先前的DES（Data Encryption Standard），已经被多方分析研究且广为全世界所使用。经过五年的甄选流程，AES由美国国家标准与技术研究院于2001年发布，并在2002年成为有效标准。2006年，AES已然成为对称密钥加密中最流行的算法之一。
 
 存储在L1原虚拟机监控器中的L2客户虚拟机磁盘映像是事先经过AES加密的，且密钥只存在于L0嵌套式虚拟化层中，因此从静态角度来看L1能接触到的仅仅是一个加过密的映像文件，L1甚至都不能获取磁盘映像的分区信息，更谈不上挂载分区获取其中的文件内容。从动态角度来看，L1按照L2发出的磁盘读取请求，从磁盘映像对应位置读取数据，其读到的也是密文数据。当L2发出磁盘写入请求时，在L1能接触到这部分待写入数据前，L0已经对其完成了加密，L1同样不能窥探到明文内容。L2客户虚拟机的磁盘数据安全由此得到保障。
 
-TODO: AESNI and Merkel tree
+Secure KVM系统中提供了如下接口对一段内存数据进行加解密。
 
+\begin{lstlisting}[language={C}, caption={inject\_virtual\_ept\_fault实现源代码}]
+typedef struct {
+	......
+} RIJNDAEL_context;
 
+int rijndael_setkey(void *context, char *key, int keylen);
+void rijndael_encrypt (void *context, unsigned char *out, const unsigned char *in);
+void rijndael_decrypt (void *context, unsigned char *out, const unsigned char *in);
+\end{lstlisting}
 
+rijndael\_setkey用于设置加解密过程中使用到的密钥，密钥其实是创建L2客户虚拟机时静态生成的一段字节数组，其长度为16个字节。rijndael\_encrypt被用于加密以第三个参数in为起始地址的长度为16字节的内存区域，并将加密后的数据写到第二个参数out所指向的内存区域。相反，rijndael\_decrypt被用来解密数据，其参数数目和意义与rijndael\_encrypt完全相同。
 
+AES ECB算法要求被处理的数据块大小为16字节的整数倍。在PIO读操作中，每次操作涉及到连续的8个磁盘扇区，共计4096字节，可以满足要求。在DMA读取和DMA写入中，每次指定的缓冲区均为若干个完整的内存页面，即4096字节的整数倍，同样可以满足要求。
 
+AESNI（Advanced Encryption Standard New Instructions）是Intel在2008年3月提出的在x86处理器上的指令集扩展，它包含了7条新指令，其中6条是硬件对AES的支持，另1条是对进位乘法的优化，从而在执行 AES 算法的某些复杂的、计算密集型子步骤时更好地利用底层硬件，减少计算消耗的CPU时钟周期，提升AES加解密的性能。Intel从Westmere平台开始就支持AESNI，目前Westmere、SandyBridge、IvyBridge、Haswell等平台都提供对AESNI的支持。
 
+Secure KVM系统在初始化时会检测当前处理器是否支持AESNI，如果支持，rijndael\_encrypt和rijndael\_decrypt中会自动采用该处理器特性以加速加解密流程，如果不支持，rijndael\_encrypt和rijndael\_decrypt中会采用软件方法来模拟实现AES。两者最后得到的加解密结果是完全一致的，仅在速度性能上有50\%左右的差距。
+
+检测处理器是否支持AESNI的功能在detect\_aesni函数中实现，此处借助x86上的CPUID指令来作出判断，返回非0表示支持，返回0表示不支持。
+
+\begin{lstlisting}[language={C}, caption={detect\_aesni实现源代码}]
+#define X86_FEATURE_AES_SHIFT	25
+
+static int detect_aesni() {
+	unsigned int eax = 1, ebx, ecx, edx;
+	__asm__ __volatile__
+    (
+        "cpuid"
+        : "=a" (eax), "=b" (ebx)
+        , "=c" (ecx), "=d" (edx)
+        : "a"  (eax)
+    );
+    return ecx & (1 << X86_FEATURE_AES_SHIFT);
+}
+\end{lstlisting}
+
+L1原虚拟机监控器还能够通过一种可能的途径来威胁L2客户虚拟机的磁盘数据安全，即破坏磁盘数据完整性。具体来说，L1能够控制其写入到L2磁盘缓冲区中的数据，如果L1写入的是一段恶意的随机构造的无意义磁盘数据，虽然L1不能获取明文磁盘数据，其却可以让L2客户虚拟机不能正常运行。
+
+为了应对来自L1磁盘数据完整性威胁，Secure KVM系统在L0中还为每个L2磁盘映像维护了一个对应的元数据文件，这个元数据文件记录了L2磁盘映像每个扇区的MD5哈希值。L0在L2客户虚拟机启动后，会将整个元数据文件载入内存。每次解密磁盘数据之前，L0会对加密磁盘数据先行计算哈希值，并与元数据文件中记载的数值进行比较，如发现不同，便说明L1恶意破坏了磁盘数据完整性，此时最好的做法是终止L1和L2的运行。相反，每次L2发出磁盘写入请求时，L0在对待写入数据进行加密后，会重新计算这部分数据的哈希值，并对元数据文件中的对应区域进行更新。
+
+在Secure KVM系统的实现中，L2客户虚拟机磁盘映像的大小为5GB，对每个磁盘扇区采用MD5算法计算后得到的哈希值是128bit，故元数据文件的最终大小为160MB，在可以接受的大小范围内。
 
 \section{实验与性能测试}
 
