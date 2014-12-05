@@ -88,19 +88,30 @@ x86处理器硬件上主要有两个结构对非根模式下的运行进行控�
 \subsection{系统总体架构}
 
 
-
-
-
-\section{对客户虚拟机内存的安全保护}
-
-
+\section{对客户虚拟机内存数据的安全保护}
 
 \subsection{基本原理}
 
-\subsection{特殊边界情形处理}
+\begin{figure}[!htp]
+  \centering
+  \includegraphics[width=0.7\textwidth]{chap3/mem_protect.png}
+  \bicaption[fig:mem_protect]{嵌套式虚拟化示意图}{嵌套式虚拟化示意图}{Fig}{Illustration on nested virtualization}
+\end{figure}
 
+图\ref{fig:mem_protect}表示了Secure KVM系统中的内存管理机制。在嵌套式虚拟化环境中，L1和L2的内存访问是在处理器硬件的辅助下通过两张页表来完成的，其内存地址的翻译要经历从GVA（Guest Virtual Address）到GPA（Guest Physical Address）、和从GPA到HPA（Host Physical Address）的两层转换过程。处理从GVA到GPA翻译的页表位于L1和L2内部，由L1和L2自身负责维护，其实就是x86体系结构中处理虚拟线性地址到物理地址转换的页表（Page Table，PT）。处理从GPA到HPA翻译的页表位于L0嵌套式虚拟化层内，由L0负责维护，其实就是Intel在第二代硬件虚拟化扩展中提出的辅助扩展页表（Extended Page Table，EPT）。在Secure KVM系统中，我们将负责处理L1中GPA到HPA翻译的EPT称为EPT01表，将负责处理L2中GPA到HPA翻译的EPT称为EPT02表。事实上，在L1原虚拟机监控器内部，为了支持L2客户虚拟机的运行，还为其维护了一张EPT表，负责处理L2 GPA到L1 GPA的转换，而EPT02表实际是EPT01表和这张表的整合，我们将其称为EPT12表。在L2客户虚拟机运行时，EPT12表没有被加载入处理器硬件。
 
+Secure KVM系统的一个设计目的是保护L2客户虚拟机内存数据的安全性，即在L1虚拟机监控器和L2之间建立内存隔离，禁止L1随意访问和修改L2的内存，从而避免L2内存空间中的敏感数据向L1泄露。
 
+由图\ref{fig:mem_protect}可得知，L1的内存访问范围受到EPT01表的控制。因此，L0只需要将属于L2的内存区域从EPT01表中去除即可达到目的，这便是内存数据安全保护的大体原理。但是如果仅仅做到这一点，L2客户虚拟机便不能再正常启动，这是因为L1虚拟机监控器为了支持L2客户虚拟机正常运行为其提供了诸如IO外设模拟、指令模拟等多种基础服务。而这些基础服务不可避免地要去访问原本属于L2的内存空间，例如L1在为L2模拟磁盘读取时需要将被读取数据从磁盘映像拷贝至L2内存缓冲区，又如L1在模拟L2的in指令或MMIO读取时需要将数据写入某个属于L2的特定内存地址。
+
+在Secure KVM系统中，我们借助于建立临时白名单来应对可能出现的例外情况。如果L1出于某种正当理由要对属于L2的内存区域进行访问，L2客户虚拟机之前必定会凭借虚拟化陷入让L0获知其即将进行的会产生例外的行为，如L2进行磁盘读取时涉及到的IO指令会产生到L0的陷入，又如进行MMIO读取时尽管使用的是普通mov指令，其仍然会产生到L0的陷入。L0在获知L2即将进行的行为后，根据相应规则，将L1在模拟该行为过程中可能访问到的L2内存区域加入临时白名单，并在EPT01表中添加这部分内存区域。如此一来，L1接下来便能正常地对L2所要求之行为进行模拟。等到L1对特殊行为完成模拟后，L0便会将这部分内存区域从临时白名单中去除，再次对EPT01表进行删改。这样，L0在维持L2客户虚拟机正常运行的同时，保护了其内存数据的安全。
+
+\subsection{磁盘读写部分的特殊处理}
+
+\subsection{指令模拟部分的特殊处理}
+
+\subsection{内存隔离与越界访问检测}
+TODO：struct page -> private
 
 \section{对客户虚拟机磁盘数据的安全保护}
 
