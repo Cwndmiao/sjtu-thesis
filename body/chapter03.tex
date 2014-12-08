@@ -140,6 +140,8 @@ Intel在其定义的虚拟化扩展中，并没有专门为指令模拟指定一
 \subsection{内存隔离与越界访问检测}
 Secure KVM系统利用struct page中的private字段来记录相关内存页面的属主信息。在Linux中每个内存页面都对应着一个struct page，其中记录着该页面的一些基本信息，private字段不是很常用（如果该页面被用作内存文件映射，private字段则指向被映射文件对应的address\_space结构体），在这些内存页被分配给客户虚拟机时，private字段是空闲不用的。又因为struct page的大小对于系统来说很敏感，如增加其中的成员变量则系统中数量庞大的page struct每个都要增大，这是一笔不小的开销，且随意增加page struct中的成员变量有可能破坏先前精心设计的高速缓存行对齐结构。因此，Secure KVM系统选择了一个相对讨巧的方法，充分利用了现有page struct中的空闲部分。
 
+private字段属于unsigned long类型，在64位Linux中为8个字节，用来存放属主信息时被分为了两部分，高4字节中放置了固定的魔数（Magic Number）0xDEADBEAF，低4字节如果值为1表示该内存页面属于L1，如果值为2则表示属于L2客户虚拟机。
+
 TODO：struct page -> private、hashtable、空页、ept invalidation
 
 \section{对客户虚拟机磁盘数据的安全保护}
