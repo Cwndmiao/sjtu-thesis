@@ -138,7 +138,7 @@ Intel在其定义的虚拟化扩展中，并没有专门为指令模拟指定一
 当L1处理完L2的虚拟化陷入，执行流即将恢复至L2时，L1必定也已经完成了必要的指令模拟，此时正是惰性白名单失效的时候。L0会将上次L2发生虚拟化陷入时产生的白名单销毁，并清除在EPT01表中惰性添加的表项。
 
 \subsection{内存隔离与越界访问检测}
-Secure KVM系统利用struct page中的private字段来记录相关内存页面的属主信息。
+Secure KVM系统利用struct page中的private字段来记录相关内存页面的属主信息。在Linux中每个内存页面都对应着一个struct page，其中记录着该页面的一些基本信息，private字段不是很常用（如果该页面被用作内存文件映射，private字段则指向被映射文件对应的address\_space结构体），在这些内存页被分配给客户虚拟机时，private字段是空闲不用的。又因为struct page的大小对于系统来说很敏感，如增加其中的成员变量则系统中数量庞大的page struct每个都要增大，这是一笔不小的开销，且随意增加page struct中的成员变量有可能破坏先前精心设计的高速缓存行对齐结构。因此，Secure KVM系统选择了一个相对讨巧的方法，充分利用了现有page struct中的空闲部分。
 
 TODO：struct page -> private、hashtable、空页、ept invalidation
 
@@ -194,7 +194,9 @@ Port Offset	& Function & Description\\
 以下是一个典型的PIO读数据过程。L2先进行IDE主盘/从盘选择，并将之与扇区逻辑块地址（LBA，Logical Block Addressing）高4位作或运算，写入0x1F6端口。随后，L2向0x1F1中写入一个零字节，向0x1F2中写入待读取扇区的数量，并把剩余的LBA地址部分分段写入至0x1F3\~0x1F5。待地址和长度信息写入完毕后，L2向命令端口0x1F7发出读数据指示并轮询等待设备就绪，最后执行rep ins指令接收磁盘数据。
 
 \begin{enumerate}
-\item Send 0xE0 for the ``master'' or 0xF0 for the ``slave'', ORed with the highest 4 bits of the LBA to port 0x1F6: outb(0x1F6, 0xE0 | (slavebit << 4) | ((LBA >> 24) & 0x0F))
+\item Send 0xE0 for the ``master'' or 0xF0 for the ``slave'', ORed with the
+    highest 4 bits of the LBA to port 0x1F6: outb(0x1F6, 0xE0 | (slavebit << 4)
+    | ((LBA >> 24) \& 0x0F))
 \item Send a NULL byte to port 0x1F1, if you like (it is ignored and wastes lots of CPU time): outb(0x1F1, 0x00)
 \item Send the sectorcount to port 0x1F2: outb(0x1F2, (unsigned char) count)
 \item Send the low 8 bits of the LBA to port 0x1F3: outb(0x1F3, (unsigned char) LBA))
