@@ -60,7 +60,7 @@
 \begin{figure}[!htp]
   \centering
   \includegraphics[width=0.7\textwidth]{chap3/nested.png}
-  \bicaption[fig:nested]{嵌套式虚拟化示意图}{嵌套式虚拟化示意图}{Fig}{Illustration on nested virtualization}
+  \bicaption[fig:nested]{嵌套式虚拟化示意}{嵌套式虚拟化示意}{Fig}{Illustration on Nested Virtualization}
 \end{figure}
 
 图\ref{fig:nested}展示了典型嵌套式虚拟化平台的主体结构，其中主要包含了L0、L1和L2三个层次。
@@ -82,10 +82,16 @@ x86处理器硬件上主要有两个结构对非根模式下的运行进行控�
 \item L2在非根模式下运行，一段时间后产生陷入
 \item 执行流再次由L0接管，L0根据VMExit类型选择自己处理或传递给L1处理
 \item 如果L0自己能处理陷入，则vmresume继续执行L2。如果必须交给L1处理，L0根据VMCS0-2准备VMCS0-1和VMCS1-2，并将执行流切换到L1
-\item 在1\~~8或5\~~8之间重复
+\item 在1$\sim$8或5$\sim$8之间重复
 \end{enumerate}
 
 \subsection{系统总体架构}
+
+\begin{figure}[!htp]
+  \centering
+  \includegraphics[width=0.7\textwidth]{chap3/nested.png}
+  \bicaption[fig:architecture]{Secure KVM系统整体架构示意}{Secure KVM系统整体架构示意}{Fig}{Illustration on System Architecture of Secure KVM}
+\end{figure}
 
 
 \section{对客户虚拟机内存数据的安全保护}
@@ -95,7 +101,7 @@ x86处理器硬件上主要有两个结构对非根模式下的运行进行控�
 \begin{figure}[!htp]
   \centering
   \includegraphics[width=0.7\textwidth]{chap3/mem_protect.png}
-  \bicaption[fig:mem_protect]{嵌套式虚拟化示意图}{嵌套式虚拟化示意图}{Fig}{Illustration on nested virtualization}
+  \bicaption[fig:mem_protect]{Secure KVM系统中的内存管理机制示意}{Secure KVM系统中的内存管理机制示意}{Fig}{Illustration on Memory Management in Secure KVM}
 \end{figure}
 
 图\ref{fig:mem_protect}表示了Secure KVM系统中的内存管理机制。在嵌套式虚拟化环境中，L1和L2的内存访问是在处理器硬件的辅助下通过两张页表来完成的，其内存地址的翻译要经历从GVA（Guest Virtual Address）到GPA（Guest Physical Address）、和从GPA到HPA（Host Physical Address）的两层转换过程。处理从GVA到GPA翻译的页表位于L1和L2内部，由L1和L2自身负责维护，其实就是x86体系结构中处理虚拟线性地址到物理地址转换的页表（Page Table，PT）。处理从GPA到HPA翻译的页表位于L0嵌套式虚拟化层内，由L0负责维护，其实就是Intel在第二代硬件虚拟化扩展中提出的辅助扩展页表（Extended Page Table，EPT）。在Secure KVM系统中，我们将负责处理L1中GPA到HPA翻译的EPT称为EPT01表，将负责处理L2中GPA到HPA翻译的EPT称为EPT02表。事实上，在L1原虚拟机监控器内部，为了支持L2客户虚拟机的运行，还为其维护了一张EPT表，负责处理L2 GPA到L1 GPA的转换，而EPT02表实际是EPT01表和这张表的整合，我们将其称为EPT12表。在L2客户虚拟机运行时，EPT12表没有被加载入处理器硬件。
@@ -137,12 +143,20 @@ Intel在其定义的虚拟化扩展中，并没有专门为指令模拟指定一
 
 当L1处理完L2的虚拟化陷入，执行流即将恢复至L2时，L1必定也已经完成了必要的指令模拟，此时正是惰性白名单失效的时候。L0会将上次L2发生虚拟化陷入时产生的白名单销毁，并清除在EPT01表中惰性添加的表项。
 
+由于受到处理器硬件特性限制，对内存数据的保护只能以页大小为粒度，即4KB。在处理指令模拟这种特殊情况时，L2不可避免要向L1暴露多余的内存数据。对于第一部分内存区域而言，当中存放的是程序指令，而在Linux中应用程序数据和指令一般不会存放于同一内存页面（.text段和.data段均为按页对齐），且需要L1为之进行指令模拟的一般是操作系统内核代码，故产生隐私数据泄露的可能性较小。对于第二部分内存区域，页表页本身并不包含隐私数据，其中存放的仅仅是一些地址映射关系。对于第三部分内存区域，由于要模拟的指令一般属于内核，指令执行时本身需要访问的内存页面一般也属于内核，故发生隐私数据泄露的可能性也较小。
+
 \subsection{内存隔离与越界访问检测}
 Secure KVM系统利用struct page中的private字段来记录相关内存页面的属主信息。在Linux中每个内存页面都对应着一个struct page，其中记录着该页面的一些基本信息，private字段不是很常用（如果该页面被用作内存文件映射，private字段则指向被映射文件对应的address\_space结构体），在这些内存页被分配给客户虚拟机时，private字段是空闲不用的。又因为struct page的大小对于系统来说很敏感，如增加其中的成员变量则系统中数量庞大的page struct每个都要增大，这是一笔不小的开销，且随意增加page struct中的成员变量有可能破坏先前精心设计的高速缓存行对齐结构。因此，Secure KVM系统选择了一个相对讨巧的方法，充分利用了现有page struct中的空闲部分。
 
 private字段属于unsigned long类型，在64位Linux中为8个字节，用来存放属主信息时被分为了两部分，高4字节中放置了固定的魔数（Magic Number）0xDEADBEAF，低4字节如果值为1表示该内存页面属于L1，如果值为2则表示属于L2客户虚拟机。
 
-TODO：struct page -> private、hashtable、空页、ept invalidation
+L2能访问的内存区域受到EPT02表的控制，而EPT02表在一开始是空白的，L2运行过程中发生缺页故障请求时EPT02表会被动态更新，其中必须经历函数set\_spte，作用是更新EPT表项。Secure KVM在set\_spte中设置了钩子，如果发现当前set\_spte正在往EPT02表中添加新页面，则将该内存页面的属主信息标记为L2，并把EPT01表中可能存在的对该页面的引用清除，L1接下来便不能再访问该页面。由于分配给L2的内存页面究根截底还是从L1的内存地址空间中划分，在L2结束运行后，L0会将EPT02表中页面的属主信息重新标记为L1。
+
+L0嵌套式虚拟化层如果发现L1在运行过程中产生了缺页故障请求，而被请求的页面属主信息为L2且未能在白名单中找到对应的页面信息，则说明L1想要非法访问属于L2的内存。L0针对这种情况特意伪造了一个填充了随机数据的页面，并将这个伪造页面在EPT01表中映射给L1。在L2运行结束后，L0会将EPT01表中的伪造映射更正，从而避免了L1访问L2内存空间中的隐私数据。
+
+临时白名单在最多时一般要存放约5000条内存页面信息。为了加快白名单的查找速度，Secure KVM系统中我们将其设计成了类似哈希表的结构，按页框号的末两位进行分类，在每一类中再用双向链表按序存储。在新内存页被加入白名单时，先要确定该页面页框号的末两位，如某页面的页框号末两位为0x34，则该页面将被放置到第0x34号链表中，并按页框号大小排序。
+
+此外，为了避免处理器TLB缓存过期的白名单信息，L0每次清理白名单中的过期页面数据时都要使用INVEPT指令对TLB进行刷新。
 
 \section{对客户虚拟机磁盘数据的安全保护}
 
@@ -173,41 +187,37 @@ TODO：struct page -> private、hashtable、空页、ept invalidation
 在L2客户操作系统刚启动时，其通过PIO（Programmed Input/Output）的方式读取磁盘数据。PIO是一种同步的简单磁盘数据访问方式。x86处理器上有256个IO端口，其中的一部分被预留给了IDE控制器，如下表所示。而处理器通过x86 ISA中的IO指令（in、out、ins、outs）来读写这些IO端口，来达到访问磁盘数据的目的。PIO的过程是同步的，处理器在执行这些IO指令时不能进行其他工作。待真正进行数据读取的ins(或带req指令前缀的ins指令)执行结束后，磁盘数据即存在于内存中的对应地址。
 
 \begin{table}[htpb]
-\bicaption[tab:pio]{磁盘PIO对IO端口的使用说明表}{磁盘PIO对IO端口的使用说明表}{Table}{x86 IO port used in disk PIO}
+\bicaption[tab:pio]{磁盘PIO对IO端口的使用说明}{磁盘PIO对IO端口的使用说明}{Table}{x86 IO Port Used in Disk PIO}
 \centering
-\resizebox{\textwidth}{!}{
 \begin{tabular}{ccc}
 \toprule
-Port Offset	& Function & Description\\
+IO端口号	& 功能 & 描述\\
 \midrule
-0	& Data Port	& Read/Write PIO data bytes on this port.\\
-1	& Features / Error Information	& Usually used for ATAPI devices.\\
-2	& Sector Count	& Number of sectors to read/write (0 is a special value).\\
-3	& Sector Number / LBAlo	& This is CHS / LBA28 / LBA48 specific.\\
-4	& Cylinder Low / LBAmid	& Partial Disk Sector address.\\
-5	& Cylinder High / LBAhi	& Partial Disk Sector address.\\
-6	& Drive / Head Port	& Used to select a drive and/or head. May supports extra address/flag bits.\\
-7	& Command port / Regular Status port	& Used to send commands or read the current status.\\
+0x1F0	& 数据端口	& 在此端口读写PIO磁盘数据\\
+0x1F1	& 特性/错误信息	& 经常被用于ATAPI设备\\
+0x1F2	& 扇区数	& 欲操作的扇区数目（0为特殊值）\\
+0x1F3	& 扇区号/LBAlo	& 部分扇区地址，取决于寻址方式\\
+0x1F4	& 柱面号低位/LBAmid	& 部分扇区地址\\
+0x1F5	& 柱面号高位/LBAhi	& 部分扇区地址\\
+0x1F6	& 驱动器号/磁头号	& 用于选择驱动器或磁头\\
+0x1F7	& 命令端口/状态信息	& 用于发送命令或读取当前状态\\
 \bottomrule
 \end{tabular}
-}
 \end{table}
 
-以下是一个典型的PIO读数据过程。L2先进行IDE主盘/从盘选择，并将之与扇区逻辑块地址（LBA，Logical Block Addressing）高4位作或运算，写入0x1F6端口。随后，L2向0x1F1中写入一个零字节，向0x1F2中写入待读取扇区的数量，并把剩余的LBA地址部分分段写入至0x1F3\~0x1F5。待地址和长度信息写入完毕后，L2向命令端口0x1F7发出读数据指示并轮询等待设备就绪，最后执行rep ins指令接收磁盘数据。
+以下是一个典型的PIO读数据过程。L2先进行IDE主盘/从盘选择，并将之与扇区逻辑块地址（LBA，Logical Block Addressing）高4位作或运算，写入0x1F6端口。随后，L2向0x1F1中写入一个零字节，向0x1F2中写入待读取扇区的数量，并把剩余的LBA地址部分分段写入至0x1F3$\sim$0x1F5。待地址和长度信息写入完毕后，L2向命令端口0x1F7发出读数据指示并轮询等待设备就绪，最后执行rep ins指令接收磁盘数据。
 
 \begin{enumerate}
-\item Send 0xE0 for the ``master'' or 0xF0 for the ``slave'', ORed with the
-    highest 4 bits of the LBA to port 0x1F6: outb(0x1F6, 0xE0 | (slavebit << 4)
-    | ((LBA >> 24) \& 0x0F))
-\item Send a NULL byte to port 0x1F1, if you like (it is ignored and wastes lots of CPU time): outb(0x1F1, 0x00)
-\item Send the sectorcount to port 0x1F2: outb(0x1F2, (unsigned char) count)
-\item Send the low 8 bits of the LBA to port 0x1F3: outb(0x1F3, (unsigned char) LBA))
-\item Send the next 8 bits of the LBA to port 0x1F4: outb(0x1F4, (unsigned char)(LBA >> 8))
-\item Send the next 8 bits of the LBA to port 0x1F5: outb(0x1F5, (unsigned char)(LBA >> 16))
-\item Send the ``READ SECTORS'' command (0x20) to port 0x1F7: outb(0x1F7, 0x20)
-\item Wait for an IRQ or poll.
-\item Transfer 256 words, a word at a time, into your buffer from I/O port 0x1F0. (In assembler, REP INSW works well for this.)
-\item Then loop back to waiting for the next IRQ (or poll again -- see next note) for each successive sector.
+\item 如果选择是主盘，发送0xE0，如果是从盘，则发送0xF0，并和LBA线性地址的高4位做或运算，结果发送至0x1F6端口：outb(0x1F6, 0xE0 | (slavebit << 4) | ((LBA >> 24) \& 0x0F))
+\item 发送一个空字节至0x1F1端口：outb(0x1F1, 0x00)
+\item 发送待读取扇区数量至0x1F2端口：outb(0x1F2, (unsigned char) count)
+\item 发送LBA线性地址的低8位至0x1F3端口：outb(0x1F3, (unsigned char) LBA))
+\item 发送LBA线性地址接下来的8位至0x1F4端口：outb(0x1F4, (unsigned char)(LBA >> 8))
+\item 发送LBA线性地址接下来的8位至0x1F5端口：outb(0x1F5, (unsigned char)(LBA >> 16))
+\item 发送``扇区读取''指令（0x20）至0x1F7端口：outb(0x1F7, 0x20)
+\item 等待来自IDE控制器的中断或进行轮询
+\item 从0x1F0端口传输256个机器字至内存缓冲区，每次传输一个机器字（使用带REP前缀的INSW指令）
+\item 回到步骤7重新等待中断或进行轮询，此循环对每个后继扇区适用
 \end{enumerate}
 
 在非嵌套式虚拟化环境下，每条IO指令均会引发VMExit，最终执行流会转移至Qemu并由其对这些IO指令进行模拟。Qemu对除最后一条rep ins指令外的其他IO指令，均只做简单的簿记工作。到了最后的rep ins指令时，Qemu会根据之前记录的扇区地址和数量信息，从磁盘映像对应位置用pread读出数据并写入虚拟机内存空间对应位置，最后Qemu会调整虚拟机指令指针寄存器rip的数值以恢复虚拟机从下一条指令执行。
@@ -217,7 +227,7 @@ Port Offset	& Function & Description\\
 \begin{figure}[!htbp]
   \centering
   \includegraphics[width=0.7\textwidth]{chap3/pio_read.png}
-  \bicaption[fig:pio_read]{嵌套式虚拟化示意图}{嵌套式虚拟化示意图}{Fig}{Illustration on nested virtualization}
+  \bicaption[fig:pio_read]{PIO读取之顺序图}{PIO读取之顺序图}{Fig}{Sequence Diagram on PIO Read}
 \end{figure}
 
 L2客户虚拟机进行PIO磁盘读取的粒度是8个磁盘扇区，即每次读取连续的8个普通磁盘扇区，正好是一个对齐的内存页（512B * 8 = 4KB）。L0对其进行解密的过程即为将对应的存放加密磁盘数据的内存页面映射到自己的地址空间，然后用事先约定好的密钥在原地址进行解密操作，其中所涉及到的多层内存地址转换、加解密算法等细节问题将在接下来的章节中进行详细论述。
@@ -231,22 +241,22 @@ L2客户虚拟机进行PIO磁盘读取的粒度是8个磁盘扇区，即每次�
 \begin{figure}[!htbp]
   \centering
   \includegraphics[width=0.7\textwidth]{chap3/prdt.png}
-  \bicaption[fig:prdt]{嵌套式虚拟化示意图}{嵌套式虚拟化示意图}{Fig}{Illustration on nested virtualization}
+  \bicaption[fig:prdt]{PRDT表示意图}{PRDT表示意图}{Fig}{Illustration on PRDT}
 \end{figure}
 
 描述存放待读取数据缓冲区内存地址的数据结构被称作物理区域描述符表（Physical Region Descriptors Table，PRDT）。PRDT中的每个表项大小为8个字节，0-3字节说明内存页面的物理地址，4-7字节说明内存区域的大小，以字节为单位，全零表示64K字节。PRDT表最后一个表项第7字节的最高一位如果被置上则表示PRDT表的结束。之所以要使用PRDT表作为描述内存缓冲区的数据结构，是因为很难从低端内存中找到物理上连续的大块区域（只有低端内存，即物理地址低于32MB的内存空间，能被一般DMA设备访问）。PRDT表实际上是从逻辑角度将多块较小的物理上不连续的内存区域拼凑出了一块虚拟的大块内存区域，类似于集散序列（scatter-gather list）。
 
 \begin{table}[htpb]
-\bicaption[tab:dma]{磁盘DMA对IO端口的使用说明表}{磁盘DMA对IO端口的使用说明表}{Table}{x86 IO port used in disk DMA}
+\bicaption[tab:dma]{磁盘DMA对IO端口的使用说明}{磁盘DMA对IO端口的使用说明}{Table}{x86 IO Port Used in Disk DMA}
 \centering
 %\resizebox{\textwidth}{!}{
 \begin{tabular}{cc}
 \toprule
-Port Offset	& Function \& Description\\
+IO端口号	& 功能描述\\
 \midrule
-0x0	&Command (byte)\\
-0x2	&Status (byte)\\
-0x4-0x7 &PRDT Address (dword)\\
+0xC220	&DMA命令端口(一字节)\\
+0xC222	&DMA状态端口(一字节)\\
+0xC224$\sim$0xC227 &PRDT表基地址(四字节)\\
 \bottomrule
 \end{tabular}
 %}
@@ -255,7 +265,7 @@ Port Offset	& Function \& Description\\
 以下是一个典型的DMA读数据过程。
 
 \begin{enumerate}
-\item 磁盘驱动通过写地址为0x1f3 \~0x1f6的IO端口，告知IDE控制器待读取磁盘扇区的位置。
+\item 磁盘驱动通过写地址为0x1f3$\sim$0x1f6的IO端口，告知IDE控制器待读取磁盘扇区的位置。
 
 \item 磁盘驱动准备好一个PRDT表放在内存中，每个表项8字节，对齐到4字节边界。
 
@@ -277,7 +287,7 @@ Port Offset	& Function \& Description\\
 \begin{figure}[!htbp]
   \centering
   \includegraphics[width=0.7\textwidth]{chap3/dma_read.png}
-  \bicaption[fig:dma_read]{嵌套式虚拟化示意图}{嵌套式虚拟化示意图}{Fig}{Illustration on nested virtualization}
+  \bicaption[fig:dma_read]{DMA读取之顺序图}{DMA读取之顺序图}{Fig}{Sequence Diagram on DMA Read}
 \end{figure}
 
 在Secure KVM系统的实现过程中，我们发现PRDT表每个表项均以内存页为粒度对齐，即所指向内存区域的起始地址和大小都是4KB的整数倍。L0剩余的工作，就是将这些用作缓冲区的内存页面映射到自己的地址空间，并在原址对其进行解密。其中所涉及到的多层内存地址转换、加解密算法等细节问题将在接下来的章节中进行详细论述。
@@ -294,9 +304,9 @@ DMA写涉及到的流程和DMA读非常相近。磁盘驱动事先准备好待�
 
 虽然DMA写和DMA读在本身流程上有诸多类似，L0在应对L2客户虚拟机的DMA写请求时做出的保护工作却要复杂繁琐得多。从本质上来说，L0采取这些保护措施的根本目的是为了保证待写磁盘数据在被L1接触到之前得到加密，即禁止L1对明文磁盘数据的访问。但是，如果L0在检测到L2发出DMA写指令后直接在原地址对缓冲区数据进行加密，L2客户虚拟机在恢复运行后不久便会崩溃。其中原因在于，现代操作系统为了提高磁盘访问效率，默认都采取了缓存策略，即将内存的一部分作为磁盘IO的缓存区并用高效数据结构进行管理，如Linux中的页缓存（page cache）。这样一来，之前从磁盘中读取的内容都保存在内存中，等到下次再要用到这部分数据时便可以直接从内存中获得，而根据程序运行的局部性原理，这部分磁盘数据在接下来被用到的概率是很大的。操作系统有时还会采取激进的预读取策略，即把当前没有被请求但处于待读取区域周围的数据预先载入内存。因此，如果L0在原地址对这部分磁盘数据进行加密，L2接下来在运行中便可能读到错误的数据，造成系统崩溃便也不足为奇了。
 
-既然不能在原地址上进行加密，一种直白的解决方案便是拷贝待加密数据到新地址，并在新地址上对磁盘数据进行加密，我们把这种方案称为蹦床缓冲区（trampoline buffer）。此方案的关键之处在于要在L2内存地址空间中寻找一块足够大的且空闲不用的区域。第一个要求为足够大，是因为一个PRDT表中指定的作为磁盘缓冲区的内存页一般有10~\~50个之多，约为40~\~200KB，用作蹦床缓冲区内存区域的大小必须超过其上限。第二个要求为空闲不用，是因为蹦床缓冲区的存在要对L2客户虚拟机保持透明。
+既然不能在原地址上进行加密，一种直白的解决方案便是拷贝待加密数据到新地址，并在新地址上对磁盘数据进行加密，我们把这种方案称为蹦床缓冲区（trampoline buffer）。此方案的关键之处在于要在L2内存地址空间中寻找一块足够大的且空闲不用的区域。第一个要求为足够大，是因为一个PRDT表中指定的作为磁盘缓冲区的内存页一般有10$\sim$50个之多，约为40$\sim$200KB，用作蹦床缓冲区内存区域的大小必须超过其上限。第二个要求为空闲不用，是因为蹦床缓冲区的存在要对L2客户虚拟机保持透明。
 
-第一种蹦床缓冲区的选取方法是利用L2物理地址空间0KB~\~640KB的区域。这部分内存区域在Linux启动过程初期被用来装载grub代码，由于其后方至物理地址为1MB的区域中存在内存空洞（一部分地址被用作MMIO），所以在Linux启动完成后，出于物理内存管理方便考虑，这一小部分内存区域是被弃置不用的。另外，这部分内存区域长度也超过一次DMA写所用到的缓冲区大小上限，正适合被用作蹦床缓冲区。
+第一种蹦床缓冲区的选取方法是利用L2物理地址空间0KB$\sim$640KB的区域。这部分内存区域在Linux启动过程初期被用来装载grub代码，由于其后方至物理地址为1MB的区域中存在内存空洞（一部分地址被用作MMIO），所以在Linux启动完成后，出于物理内存管理方便考虑，这一小部分内存区域是被弃置不用的。另外，这部分内存区域长度也超过一次DMA写所用到的缓冲区大小上限，正适合被用作蹦床缓冲区。
 
 第二种蹦床缓冲区的选取方法是在L0中监视L2客户虚拟机进行E820内存探测的过程，故意保留一小段内存区，欺骗L2客户虚拟机这部分保留区域是不可访问的，事实上却将这部分内存区域留作他用。
 
@@ -333,7 +343,7 @@ DMA写涉及到的流程和DMA读非常相近。磁盘驱动事先准备好待�
 \begin{figure}[!htbp]
   \centering
   \includegraphics[width=0.7\textwidth]{chap3/paging.png}
-  \bicaption[fig:paging]{多层内存地址转换示意图}{多层内存地址转换示意图}{Fig}{Illustration on Multi-dimensional Paging}
+  \bicaption[fig:paging]{多层内存地址转换示意}{多层内存地址转换示意}{Fig}{Illustration on Multi-dimensional Paging}
 \end{figure}
 
 在L0嵌套式虚拟化层进行磁盘数据加解密时，必须适时地进行内存地址之间的转换。如负责L2 GPA到L1 GPA转换的EPT12表，其根地址和表项中的地址数据均以L1 GPA的形式存在。又如L2客户虚拟机进行DMA操作时使用的PRDT表，其中的表项地址数据以L2 GPA的形式存在。下文将以L2 GPA到L0 HVA为例，详述其中的地址转换过程。
@@ -391,7 +401,7 @@ static unsigned long ept02_p2m(unsigned long pfn) {
 
 在大部分情况下，直接从EPT02表中获取L2 GPA到L0 HPA的映射关系，或者退而求其次，从EPT01和EPT12中的数据整合出L2 GPA到L0 HPA的映射关系，是满足要求的。但在某些极端情况下，这种方式仍然会产生问题。
 
-现假设L2客户虚拟机发起了一次DMA读数据请求，并在PRDT表中指定物理地址(L2 GPA)为0x12345000~\~0x12346000的内存区域作为数据缓冲区。但是，L2尚未访问过这部分内存区域，所以EPT02表中不会存在到L0 HPA的映射关系。同理，EPT12表中也不会存在到L1 GPA的映射关系（EPT01表中可能存在L1 GPA到L0 HPA的映射关系，取决于此时L1有无将磁盘数据填入缓冲区），此时便不能取得L2 GPA到L0 HPA的映射关系，无法对原先加密的磁盘数据进行解密。
+现假设L2客户虚拟机发起了一次DMA读数据请求，并在PRDT表中指定物理地址(L2 GPA)为0x12345000$\sim$0x12346000的内存区域作为数据缓冲区。但是，L2尚未访问过这部分内存区域，所以EPT02表中不会存在到L0 HPA的映射关系。同理，EPT12表中也不会存在到L1 GPA的映射关系（EPT01表中可能存在L1 GPA到L0 HPA的映射关系，取决于此时L1有无将磁盘数据填入缓冲区），此时便不能取得L2 GPA到L0 HPA的映射关系，无法对原先加密的磁盘数据进行解密。
 
 有两种方案可以被用来解决该困境，分别为主动式和被动式。
 
@@ -427,7 +437,7 @@ static void inject_virtual_ept_fault() {
 }
 \end{lstlisting}
 
-在L0处理虚拟机陷入的函数vmx\_handle\_exit中，一旦发现vmx->inject\_virtual\_ept\_fault标志位被设置，便会调用inject\_virtual\_ept\_fault向L1中注入虚拟缺页故障。inject\_virtual\_ept\_fault首先调用nested\_vmx\_vmexit让L1在处理器下次进入非根模式时获得运行机会。由于在嵌套式虚拟化环境下，L0对于L1是透明的，L1在重新获得运行机会后会认为是L2发生了虚拟机陷入，便会从VMCS12中读取陷入的原因并进行相应处理。因此，inject\_virtual\_ept\_fault还必须在VMCS12中模拟出陷入现场，这是通过设置VMCS12中的三个关键字段vm\_exit\_reason、exit\_qualification和guest\_physical\_address（即L2 GPA）来达到。最后，inject\_virtual\_ept\_fault清除虚拟缺页故障注入标志位，L1继续运行并填补EPT12表中空缺的映射关系。
+在L0处理虚拟机陷入的函数vmx\_handle\_exit中，一旦发现vmx->inject\_vi\-rtual\_ept\_fault标志位被设置，便会调用inject\_virtual\_ept\_fault向L1中注入虚拟缺页故障。inject\_virtual\_ept\_fault首先调用nested\_vmx\_vmexit让L1在处理器下次进入非根模式时获得运行机会。由于在嵌套式虚拟化环境下，L0对于L1是透明的，L1在重新获得运行机会后会认为是L2发生了虚拟机陷入，便会从VMCS12中读取陷入的原因并进行相应处理。因此，inject\_virtual\_ept\_fault还必须在VMCS12中模拟出陷入现场，这是通过设置VMCS12中的三个关键字段vm\_exit\_reason、exit\_qualification和guest\_physical\_address（即L2 GPA）来达到。最后，inject\_virtual\_ept\_fault清除虚拟缺页故障注入标志位，L1继续运行并填补EPT12表中空缺的映射关系。
 
 另一种方案是通过被动方式来解决该问题。此方案是基于这样的考虑，L2客户虚拟机要访问磁盘数据，EPT02表中必须要存在相应L2 GPA到L0 HPA的映射关系。因此，我们可以延迟对转换缺失的L2内存区域的解密工作，将其暂存至链表中，并对EPT02表的更新进行监视。一旦，EPT02表中增添了新的映射关系，说明L2即将对这部分内存区域进行访问，此时可以继续之前未完成的数据解密工作，并将已完成解密的内存区域从暂存链表中移除。
 
@@ -485,10 +495,44 @@ L1原虚拟机监控器还能够通过一种可能的途径来威胁L2客户虚�
 
 \section{实验与性能测试}
 
+\subsection{实现与配置}
 
+Secure KVM系统中，L0嵌套式虚拟化层采用安装了嵌套式虚拟化补丁的Linux，代码源自KVM开发git库的queue分支，内核版本号为3.10.0-rc1。此外，L1和L2均为未经修改的普通Linux发行版，L1使用了带图形界面的Ubuntu 10\.04桌面版本并安装了KVM，L2使用了不带图形界面的Ubuntu 10.04服务器版本。
+
+运行Secure KVM的机器配置如表\ref{tab:machine}所示。
+
+\begin{table}[htpb]
+\bicaption[tab:machine]{运行Secure KVM系统的机器配置}{运行Secure KVM系统的机器配置}{Table}{Host Configuration for Secure KVM System}
+\centering
+\begin{tabular}{cc}
+\toprule
+配置项	& 规格\\
+\midrule
+处理器	& Intel Xeon E3-1230 v2 (8M Cache, 3.30 GHz)\\
+内存	& 16GB\\
+主板	& Gigabyte B75M-D3V\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Intel Xeon E3-1230 v2处理器提供了第二代硬件辅助虚拟化支持，并支持AESNI指令集扩展。在L1和L2运行过程中，我们分别为其分配了8GB和512MB的内存空间。
+
+在L0中启动L1虚拟机监控器的命令行如下，加入-cpu host配置项是因为要将处理器的硬件特性全部暴露给L1。
+
+qemu-system-x86\_64 -m 8192 -hda ./l1.img -enable-kvm -cpu host
+
+在L1中启动L2客户虚拟机的命令行如下。
+
+qemu-system-x86\_64 -m 512 -hda ./l2.img -enable-kvm
+
+\subsection{内存攻击与防御}
+
+\subsection{静态磁盘攻击与防御}
+
+\subsection{动态磁盘攻击与防御}
 
 \section{相关研究工作分析}
 
-
+TODO：SecureVisor、Overshadow、BitVisor、CloudVisor
 
 \section{本章小结}
