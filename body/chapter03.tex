@@ -527,9 +527,39 @@ qemu-system-x86\_64 -m 512 -hda ./l2.img -enable-kvm
 
 \subsection{内存攻击与防御}
 
+\noindent
+\textbf{攻击\uppercase\expandafter{\romannumeral1}}：在L1中窥探L2的进程列表和模块列表
+
+\noindent
+\textbf{防御\uppercase\expandafter{\romannumeral1}}：阻止L1窥探L2的进程列表和模块列表
+
+\noindent
+\textbf{攻击\uppercase\expandafter{\romannumeral2}}：L1中的普通权限进程提权
+
+\noindent
+\textbf{防御\uppercase\expandafter{\romannumeral2}}：阻止L1中的普通权限进程提权
+
+\noindent
+\textbf{攻击\uppercase\expandafter{\romannumeral3}}：在L1中改变L2中正常程序的执行流
+
+\noindent
+\textbf{防御\uppercase\expandafter{\romannumeral3}}：阻止L1改变L2中正常程序的指令流
+
 \subsection{静态磁盘攻击与防御}
 
+\noindent
+\textbf{攻击\uppercase\expandafter{\romannumeral4}}：在L1中挂载L2磁盘映像分区并查看修改其中的文件
+
+\noindent
+\textbf{防御\uppercase\expandafter{\romannumeral4}}：阻止L1挂载L2磁盘映像分区和查看修改其中的文件
+
 \subsection{动态磁盘攻击与防御}
+
+\noindent
+\textbf{攻击\uppercase\expandafter{\romannumeral5}}：在L1中记录L2运行过程中的磁盘活动
+
+\noindent
+\textbf{防御\uppercase\expandafter{\romannumeral5}}：阻止L1记录L2运行过程中的磁盘活动
 
 \section{相关研究工作分析}
 
