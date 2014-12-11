@@ -528,38 +528,121 @@ qemu-system-x86\_64 -m 512 -hda ./l2.img -enable-kvm
 \subsection{内存攻击与防御}
 
 \noindent
-\textbf{攻击\uppercase\expandafter{\romannumeral1}}：在L1中窥探L2的进程列表和模块列表
+\textbf{攻击\uppercase\expandafter{\romannumeral1}}：在虚拟机监控器中窥探客户虚拟机的进程列表和模块列表
+
+LibVMI是一套用于虚拟机自省的工具和应用程序库。LibVMI在虚拟机监控器提供接口的前提下，可以访问运行中的客户虚拟机内存，并提供了用物理地址、虚拟地址和客户操作系统内核函数符号进行访存寻址的命令原语。LibVMI还支持操作客户虚拟机的内存快照，从中获取有用语义信息，对调试和取证分析能起到很大帮助。
+
+LibVMI在examples文件夹下提供了process-list和module-list两个样例程序，分别可以被用于获取客户虚拟机中正运行的进程列表和已加载的内核模块列表。Linux中，所有当前正在运行的进程都在内核地址空间有与之对应的task\_struct结构体，而系统中所有的task\_struct结构体均被双向串联成环状链表，process-list程序通过先找到init\_task这个内核符号地址，并对该环状链表进行遍历，从而获取客户虚拟机中所有的进程信息。module-list程序的运行原理与上述流程类似。图\ref{fig:libvmi:a}和图\ref{fig:libvmi:b}分别显示了process-list和module-list这两个程序在正常普通虚拟化平台之上的运行情况。
+
+\begin{figure}
+\centering
+\subfigure[process-list的运行结果]{
+\label{fig:libvmi:a} %% label for first subfigure
+\includegraphics[width=0.7\textwidth]{chap3/process_list_a.png}}
+%\hspace{1px}
+\subfigure[module-list的运行结果]{
+\label{fig:libvmi:b} %% label for second subfigure
+\includegraphics[width=0.7\textwidth]{chap3/module_list_a.png}}
+\bicaption[fig:libvmi]{LibVMI示例程序在正常虚拟化平台上的运行结果}{LibVMI示例程序在正常虚拟化平台上的运行结果}{Fig}{Illustration on running results of LibVMI applications on normal virtualization platform}
+%\label{fig:libvmi} %% label for entire figure
+\end{figure}
+
+之所以process-list和module-list这两个样例程序能获取客户虚拟机的进程信息和模块加载信息，是因为在正常虚拟化平台上虚拟机监控器能轻易获取客户虚拟机所有的内存并访问其中的数据。此行为具有一定的危险性，恶意的虚拟机监控器可以挑选感兴趣的客户进程进行分析，进而访问其进程地址空间，如果这恰好是一个浏览器进程，其进程地址空间中保存的已浏览网页数据和账号密码等信息很有可能因此而被泄露。
 
 \noindent
 \textbf{防御\uppercase\expandafter{\romannumeral1}}：阻止L1窥探L2的进程列表和模块列表
 
-\noindent
-\textbf{攻击\uppercase\expandafter{\romannumeral2}}：L1中的普通权限进程提权
+在Secure KVM系统中，我们同样在L1虚拟机监控器中运行process-list和module-list两个程序，结果如图\ref{fig:libvmi2}所示。
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=0.7\textwidth]{chap3/process_list_b.png}
+  \bicaption[fig:libvmi2]{process-list程序在Secure KVM上的运行结果}{process-list程序在Secure KVM上的运行结果}{Fig}{Illustration on running result of process-list in Secure KVM}
+\end{figure}
+
+当L1虚拟机监控器在试图映射属于L2客户虚拟机的内存页面时，此行为会被L0嵌套式虚拟化层检测到，L0会使用一张填充了随机数据的伪造页面来欺骗L1。LibVMI中的样例程序会发现其获取的内存数据不符合预定规则（其实是垃圾随机数据），未能通过规则检查，便会显示结果为``Failed to init LibVMI library''。而此时，L2客户虚拟机仍然在正常运行，其内存中的隐私数据受到了L0的保护。
 
 \noindent
-\textbf{防御\uppercase\expandafter{\romannumeral2}}：阻止L1中的普通权限进程提权
+\textbf{攻击\uppercase\expandafter{\romannumeral2}}：客户虚拟机中的普通权限进程提权
+
+Linux操作系统在/etc/shadow文件中保存了系统中所有用户的权限、加密密码等关键信息，正常情况下只有系统管理员即超级用户（uid=0）才有权利进行查看和修改。客户虚拟机中开始时以普通用户权限（uid=1000）运行了root-hijack程序，由于其不具备超级用户权限，root-hijack程序不能访问/etc/shadow文件中的数据。打开/etc/shadow文件时，open系统调用会返回-1，即无用文件描述符，同时会提示EPERM错误信息，即权限不足，如图\ref{fig:root_hijack_a}所示。
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=0.7\textwidth]{chap3/root_hijack_a.png}
+  \bicaption[fig:root_hijack_a]{root-hijack程序未能读取/etc/shadow文件}{root-hijack程序未能读取/etc/shadow文件}{Fig}{Failure of root-hijack on accessing /etc/shadow}
+\end{figure}
+
+此时，在虚拟机监控器中执行修改后的process-list命令，该命令经过修改后能定位root-hijack进程的task\_struct结构体并将该结构体中的uid和euid均替换为0，此时root-hijack进程便在事实上具备了超级用户权限，因为Linux操作系统在系统调用中仅仅简单地根据task\_struct结构体中的数据域来进行权限检查。root-hijack程序经由恶意虚拟机监控器的协助，现在能顺利获取/etc/shadow文件中的隐私数据，除此之外，一切原先需要超级用户权限才能实施的操作均能顺利进行。如图\ref{fig:root_hijack_b}所示。
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=0.7\textwidth]{chap3/root_hijack_b.png}
+  \bicaption[fig:root_hijack_b]{root-hijack程序顺利读取/etc/shadow文件}{root-hijack程序顺利读取/etc/shadow文件}{Fig}{Success of root-hijack on accessing /etc/shadow}
+\end{figure}
+
+此例为虚拟机监控器在获取系统中进程信息后，有针对地修改客户虚拟机特定内存，帮助普通权限进程提权。此现象存在的根本原因仍在于在普通虚拟化平台上虚拟机监控器能不受控制地任意访问属于客户虚拟机的内存。
 
 \noindent
-\textbf{攻击\uppercase\expandafter{\romannumeral3}}：在L1中改变L2中正常程序的执行流
+\textbf{防御\uppercase\expandafter{\romannumeral2}}：阻止L1帮助L2中的普通权限进程提权
+
+在Secure KVM系统中，我们同样在root-hijack程序运行至一半时，于L1中执行修改后的process-list命令。由于L0嵌套式虚拟化层使用了填充了无效数据的内存页去欺骗L1，process-list命令的运行结果仍然如图\ref{fig:libvmi2}一样，L1帮助root-hijack程序提升权限的举动未能成功。
+
+\noindent
+\textbf{攻击\uppercase\expandafter{\romannumeral3}}：在虚拟机监控器中改变客户虚拟机中正常程序的执行流
+
+在客户虚拟机中编译并执行名为good的普通程序，good程序本身的行为很简单，在控制台上打印5行``do something good''字符串便退出。然而事实上，good程序的实际执行效果却是与预期大相径庭，在控制台上打印出了5行``do something bad''，如图\ref{fig:exe_flow}所示。
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=0.7\textwidth]{chap3/exe_flow.png}
+  \bicaption[fig:exe_flow]{被执行流劫持后的good程序运行行为}{被执行流劫持后的good程序运行行为}{Fig}{Running results of a hijacked application}
+\end{figure}
+
+之所以会出现截然相反的执行结果，是因为L1虚拟机监控器将good程序的.text段部分替换成了一截精心构造的shellcode。这段shellcode的作用是合理设置客户虚拟机的寄存器值，并执行INT 0x80软件中断以发起exec系统调用，执行另一个名为bad的程序，而bad程序的行为是往控制台上打印5行``do something bad''。
+
+此行为对客户虚拟机而言具有较大危险性，事实上bad程序的行为可以是任意的（开启远程shell或格式化磁盘）。例如，攻击者可以通过Web网页上传任意恶意程序至客户虚拟机，再通过此种方式让恶意程序获得执行，便可以完全控制该客户虚拟机。
 
 \noindent
 \textbf{防御\uppercase\expandafter{\romannumeral3}}：阻止L1改变L2中正常程序的指令流
 
+在Secure KVM系统中，L1虚拟机监控器不能任意接触L2客户虚拟机的内存，因此L1写shellcode时也仅仅是把这段恶意代码写到了伪造的L2内存页面中。L1在为L2客户虚拟机进行指令模拟时，L0允许L1访问L2被模拟指令所在的内存页面，然而L1对此内存页面仅有读取权限，同样不能达到写入恶意shellcode的目的。具备了L0嵌套式虚拟化层的保护，good程序在Secure KVM系统内的执行行为符合预期。
+
+此外，在L1完成对L2客户虚拟机的指令模拟后，执行流重新回到L0时，L0会对L2关键寄存器的值进行检查（如rip、rflags等，执行流攻击）。如果发现L2关键寄存器的值发生无缘由的改变，L0会认定L1正在对L2进行执行流攻击，L0此时会暂停L1和L2的执行。
+
 \subsection{静态磁盘攻击与防御}
 
 \noindent
-\textbf{攻击\uppercase\expandafter{\romannumeral4}}：在L1中挂载L2磁盘映像分区并查看修改其中的文件
+\textbf{攻击\uppercase\expandafter{\romannumeral4}}：在虚拟机监控器中挂载客户虚拟机磁盘映像分区并查看修改其中的文件
+
+在普通虚拟化平台上，客户虚拟机的磁盘映像以明文形式存储在虚拟机监控器中。虚拟机监控器可以很容易地查看磁盘映像中的分区信息（在MBR格式的磁盘中，分区信息存储在磁盘的第一个扇区中），并选择特定分区进行挂载。挂载磁盘映像分区后，虚拟机监控器可以任意查看和修改分区内的文件。
+
+一个可能的攻击案例为，虚拟机监控器可以在挂载分区后将虚拟机磁盘映像中的可执行文件替换为恶意程序并为之添加自启动项，等到客户虚拟机启动后，该恶意程序便能获得运行机会。
 
 \noindent
 \textbf{防御\uppercase\expandafter{\romannumeral4}}：阻止L1挂载L2磁盘映像分区和查看修改其中的文件
 
+由于存在放L1虚拟机监控器中的L2客户虚拟机磁盘映像已经事先经过了AES加密，L1在无法获取加密密钥的前提下，不能获取磁盘映像的明文内容。L1甚至不能获取L2磁盘映像中的分区信息，挂载分区并修改文件内容更无从谈起。
+
+此外，L0会在客户虚拟机运行时对磁盘数据的完整性进行检查（比对每个扇区的MD5哈希值是否相符），如果L1企图通过恶意修改磁盘映像数据破坏L2正常运行，此行为也能够被L0及时发现。
+
 \subsection{动态磁盘攻击与防御}
 
 \noindent
-\textbf{攻击\uppercase\expandafter{\romannumeral5}}：在L1中记录L2运行过程中的磁盘活动
+\textbf{攻击\uppercase\expandafter{\romannumeral5}}：在虚拟机监控器中记录客户虚拟机运行过程中的磁盘活动
+
+客户虚拟机的磁盘设备由Qemu来模拟，恶意虚拟机监控器能够通过修改Qemu，记录客户虚拟机所有的磁盘活动，包括读取和写入磁盘的所有数据。如图\ref{fig:disk_dynamic}所示，在刚开启的客户虚拟机中执行写磁盘操作，如echo ``teststring'' >> test \&\& sync，在修改版Qemu的qemu-disk-attack/disk\_log/目录下即可以看到刚才写入的数据。
+
+\begin{figure}[!htbp]
+  \centering
+  \includegraphics[width=0.7\textwidth]{chap3/disk_dynamic.png}
+  \bicaption[fig:disk_dynamic]{通过修改Qemu记录客户虚拟机的磁盘活动}{通过修改Qemu记录客户虚拟机的磁盘活动}{Fig}{Disk operation recording with modified Qemu}
+\end{figure}
 
 \noindent
 \textbf{防御\uppercase\expandafter{\romannumeral5}}：阻止L1记录L2运行过程中的磁盘活动
+
+在Secure KVM系统中，L0嵌套式虚拟化层在L1接触到待写入的L2磁盘数据之前，会先行对这部分磁盘数据进行加密，此外L1从客户虚拟机磁盘映像中读取并写入L2内存空间的也是密文数据，因此L1始终只能接触到加密后的客户虚拟机磁盘数据。即使L1通过修改版的Qemu对这部分数据进行了记录，对其也没有任何明显意义。
 
 \section{相关研究工作分析}
 
