@@ -3,7 +3,7 @@
 %% Encoding: UTF-8
 %%==================================================
 
-\chapter{FlexCore：采用VCPU-Ballooning的虚拟机动态调度系统}
+\chapter{FlexCore：采用vCPU-Bal的虚拟机动态调度系统}
 \label{chap:flexcore}
 
 
@@ -14,7 +14,7 @@
 
 而随着硬件技术的发展，处理器单个核心的性能提升逐渐遇到了瓶颈，处理器开始朝着多核化的方向演进，具备多个核心的处理器在云计算平台服务器上得到普及。为了充分利用多核处理器的并行性，与此同时满足用户对于处理能力的更高要求，具备多个虚拟处理器（Virtual CPU，vCPU）的虚拟机在实际生产环境中被广泛采用。而通过将多台虚拟机整合到一台物理机上运行，云服务提供商可以进一步提高硬件资源利用率并降低能源消耗成本。因此，如何提高整合后多台虚拟机的总体运行效率，成为了一个颇有实际价值的研究问题。
 
-在虚拟化环境下，存在着双重调度现象[3]，底下虚拟机监控器（Virtual Machine Monitor，VMM）将vCPU调度到物理处理器上，上层虚拟机中的操作系统再将里面运行的进程调度到vCPU上。然而，上层虚拟机中的绝大部分操作对于底下VMM而言是透明的，VMM中的调度器难以获知上层虚拟机中的真实运行情况。这层语义隔阂的存在，带来了一些在非虚拟化环境中不存在的问题，造成虚拟机中程序运行效率的低下。例如，虚拟机中一个持有内核自旋锁的vCPU在关闭内核抢占进入临界区的情况下，仍有可能因为处理器时间片耗尽或者物理机外部中断到来等原因被抢占。此现象将严重增加同步操作的延迟，因为另一个vCPU有可能在等待进入同一临界区。此问题在运行并行应用程序的多核虚拟机上将得到放大，严重阻碍了系统整体性能的提升。
+在虚拟化环境下，存在着双重调度现象\cite{JohnD}，底下虚拟机监控器（Virtual Machine Monitor，VMM）将vCPU调度到物理处理器上，上层虚拟机中的操作系统再将里面运行的进程调度到vCPU上。然而，上层虚拟机中的绝大部分操作对于底下VMM而言是透明的，VMM中的调度器难以获知上层虚拟机中的真实运行情况。这层语义隔阂的存在，带来了一些在非虚拟化环境中不存在的问题，造成虚拟机中程序运行效率的低下。例如，虚拟机中一个持有内核自旋锁的vCPU在关闭内核抢占进入临界区的情况下，仍有可能因为处理器时间片耗尽或者物理机外部中断到来等原因被抢占。此现象将严重增加同步操作的延迟，因为另一个vCPU有可能在等待进入同一临界区。此问题在运行并行应用程序的多核虚拟机上将得到放大，严重阻碍了系统整体性能的提升。
 
 但是，现有虚拟化平台采用的调度器并没有考虑到上述双重调度引发的性能问题。为此，以往研究者提出了若干种类似协同调度的策略[4][10]，让相互构成协作关系的vCPU同时运行。然而，这些调度策略可能引入处理器时间碎片化和优先级反转等新问题，并没有将双重调度问题完全解决，给系统带来的整体性能改善也较为有限。
 
@@ -58,7 +58,7 @@
 
 \begin{figure}[!htp]
   \centering
-  \includegraphics[width=0.7\textwidth]{chap4/ipi_delay}
+  \includegraphics[width=0.8\textwidth]{chap4/ipi_delay}
   \bicaption[fig:ipi_delay]{函数调用IPI延迟示意图}{函数调用IPI延迟示意图}{Fig}{Illustration on function call IPI delay}
 \end{figure}
 
@@ -70,7 +70,7 @@
 
 \begin{figure}[!htp]
   \centering
-  \includegraphics[width=0.7\textwidth]{chap4/spinlock}
+  \includegraphics[width=0.8\textwidth]{chap4/spinlock}
   \bicaption[fig:spinlock]{自旋锁持有者抢占示意图}{自旋锁持有者抢占示意图}{Fig}{Illustration on spinlock holder preemption}
 \end{figure}
 
@@ -108,7 +108,7 @@ vCPU-Bal方法具有以下优点：
 
 \begin{figure}[!htp]
   \centering
-  \includegraphics[width=0.7\textwidth]{chap4/architecture}
+  \includegraphics[width=0.8\textwidth]{chap4/architecture}
   \bicaption[fig:architecture]{KVM平台上FlexCore系统的总体架构}{KVM平台上FlexCore系统的总体架构}{Fig}{System architecture of FlexCore on KVM}
 \end{figure}
 
@@ -134,7 +134,7 @@ N_{vCPUi} = \frac{W_{VMi} * T_{pCPU}}{\sum_{i=1}^n W_{VMi}}
 
 \begin{figure}[!htp]
   \centering
-  \includegraphics[width=0.8\textwidth]{chap4/algorithm}
+  \includegraphics[width=0.85\textwidth]{chap4/algorithm}
   \bicaption[fig:algorithm]{vCPU-Bal基本流程伪代码}{vCPU-Bal基本流程伪代码}{Fig}{Algorithm in vCPU-Bal control center}
 \end{figure}
 
