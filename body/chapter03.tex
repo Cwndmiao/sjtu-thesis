@@ -259,7 +259,7 @@ L2客户虚拟机进行PIO磁盘读取的粒度是8个磁盘扇区，即每次�
 
 描述存放待读取数据缓冲区内存地址的数据结构被称作物理区域描述符表（Physical Region Descriptors Table，PRDT）。PRDT中的每个表项大小为8个字节，0-3字节说明内存页面的物理地址，4-7字节说明内存区域的大小，以字节为单位，全零表示64K字节。PRDT表最后一个表项第7字节的最高一位如果被置上则表示PRDT表的结束。之所以要使用PRDT表作为描述内存缓冲区的数据结构，是因为很难从低端内存中找到物理上连续的大块区域（只有低端内存，即物理地址低于32MB的内存空间，能被一般DMA设备访问）。PRDT表实际上是从逻辑角度将多块较小的物理上不连续的内存区域拼凑出了一块虚拟的大块内存区域，类似于集散序列（Scatter-Gather list）。
 
-\begin{table}[!htpb]
+\begin{table}[!htbp]
 \bicaption[tab:dma]{磁盘DMA对I/O端口的使用说明}{磁盘DMA对I/O端口的使用说明}{Table}{x86 I/O Port Used in Disk DMA}
 \centering
 %\resizebox{\textwidth}{!}{
@@ -415,12 +415,12 @@ static unsigned long ept02_p2m(unsigned long pfn) {
 
 \begin{lstlisting}[language={C}, caption={inject\_virtual\_ept\_fault函数实现源码}]
 static int vmx_handle_exit(struct kvm_vcpu *vcpu) {
-  	......
+    ......
     if (is_guest_mode(vcpu) && vmx->inject_virtual_ept_fault) {
         inject_virtual_ept_fault();
         return 1;
     }
-	  ......
+    ......
 }
 
 static void inject_virtual_ept_fault() {	
@@ -457,7 +457,7 @@ Secure KVM系统中提供了如下接口对一段内存数据进行加解密。
 
 \begin{lstlisting}[language={C}, caption={inject\_virtual\_ept\_fault函数实现源码}]
 typedef struct {
-	  ......
+    ......
 } RIJNDAEL_context;
 
 int rijndael_setkey (void *context, char *key, int keylen);
@@ -479,8 +479,8 @@ Secure KVM系统在初始化时会检测当前处理器是否支持AESNI，如�
 #define X86_FEATURE_AES_SHIFT	25
 
 static int detect_aesni() {
-	  unsigned int eax = 1, ebx, ecx, edx;
-	  __asm__ __volatile__
+    unsigned int eax = 1, ebx, ecx, edx;
+    __asm__ __volatile__
     (
         "cpuid"
         : "=a" (eax), "=b" (ebx)
@@ -505,7 +505,7 @@ Secure KVM系统中，L0嵌套式虚拟化层采用安装了嵌套式虚拟化�
 
 运行Secure KVM的机器配置如表\ref{tab:machine}所示。
 
-\begin{table}[htpb]
+\begin{table}[!htbp]
 \bicaption[tab:machine]{运行Secure KVM系统的机器配置}{运行Secure KVM系统的机器配置}{Table}{Host Configuration for Secure KVM System}
 \centering
 \begin{tabular}{cc}

@@ -20,13 +20,13 @@
 具体而言，本文的主要贡献可以概括如下：
 
 \begin{itemize}
-\item 基于嵌套式虚拟化实现了Secure KVM系统。通过在原虚拟机监控器KVM下方添加安全嵌套式虚拟化层,Secure KVM将原先占据系统最高权限的KVM调整到非根模式运行，并在嵌套式虚拟化层中监视KVM做出的所有与客户虚拟机相关的操作。Secure KVM在保障了客户虚拟机正常运行的同时，避免其中的用户隐私数据遭到恶意虚拟机监控器窥探，以可以接受的性能开销增强了云环境中的数据安全。
-\item 在KVM虚拟化平台上完善并实现了vCPU ballooning虚拟机调度算法。vCPU ballooning是宋翔博士首先在Apsys'13提出的一种全新虚拟机调度策略，其通过主动减少赋予虚拟机的vCPU数目来避免因多个vCPU竞争物理处理器而造成的性能损耗。本文在该策略初步构想的基础上，细致剖析了该策略奏效的内在原因，完善了具体的调度算法，并在KVM平台上给出了完整实现。测试结果表明，该调度算法给并行应用程序测试集带来了高达50\%的平均性能提升。
+\item 基于嵌套式虚拟化实现了Secure KVM系统。通过在原虚拟机监控器KVM下方添加安全嵌套式虚拟化层，Secure KVM将原先占据系统最高权限的KVM调整到非根模式运行，并在嵌套式虚拟化层中监视KVM做出的所有与客户虚拟机相关的操作。Secure KVM在保障了客户虚拟机正常运行的同时，避免其中的用户隐私数据遭到恶意虚拟机监控器窥探，以可以接受的性能开销增强了云环境中的数据安全。
+\item 在KVM虚拟化平台上完善并实现了vCPU Ballooning虚拟机调度算法。vCPU Ballooning是宋翔博士首先在Apsys'13提出的一种全新虚拟机调度策略，其通过主动减少赋予虚拟机的vCPU数目来避免因多个vCPU竞争物理处理器而造成的性能损耗。本文在该策略初步构想的基础上，细致剖析了该策略奏效的内在原因，完善了具体的调度算法，并在KVM平台上给出了完整实现。测试结果表明，该调度算法给并行应用程序测试集带来了高达50\%的平均性能提升。
 \end{itemize}
 
-在本文最后，作者还对解决上述问题的可能新途径和系统虚拟化领域的未来发展方向提出了展望。
+在本文最后，作者还就解决上述问题的可能新途径和系统虚拟化领域的未来发展方向提出了展望。
 
-  \keywords{\large 系统虚拟化 \quad 隐私安全 \quad 嵌套式虚拟化 \quad 虚拟机聚合 \quad vCPU ballooning}
+  \keywords{\large 系统虚拟化 \quad 隐私安全 \quad 嵌套式虚拟化 \quad 虚拟机聚合 \quad vCPU Ballooning}
 \end{abstract}
 
 \begin{englishabstract}
@@ -43,11 +43,11 @@ In order to address the problems mentioned above, thus improving the security an
 
 \begin{itemize}
 \item Based on nested virtualization, the thesis presents the Secure KVM system, which inserts a nested virtualization layer and deprivileges the KVM hypervisor. As any VMX operation by the deprivileged KVM in non-root mode causes trap to the nested virtualization layer, Secure KVM is able to monitor all guest-VM-related activities by KVM, filtering insecure/invalid intents like mapping memory pages belonging to guest VM. With acceptable performance penalty, Secure KVM enhances data privacy and integrity in guest VM notably, according to the attacking and defending demos in Chapter 3.
-\item To mitigate the huge performance degradation caused by double scheduling, the thesis incorporates vCPU ballooning, viz., a novel VM scheduling strategy, into KVM and presents the FlexCore system. Chapter 4 first identifies function-call IPI delay and spinlock holder preemption as the two main causes that lead vCPUs entering long and meaningless busy waiting states. Unlike traditional approaches, FlexCore proactively avoids contention by reducing the number of vCPUs. Our evaluation shows that the average performance improvement for PARSEC applications is approximately 52.9\%.
+\item To mitigate the huge performance degradation caused by double scheduling, the thesis incorporates vCPU Ballooning, viz., a novel VM scheduling strategy, into KVM and presents the FlexCore system. Chapter 4 first identifies function-call IPI delay and spinlock holder preemption as the two main causes that lead vCPUs entering long and meaningless busy waiting states. Unlike traditional approaches, FlexCore proactively avoids contention by reducing the number of vCPUs. Our evaluation shows that the average performance improvement for PARSEC applications is approximately 52.9\%.
 \end{itemize}
 
 In the end, the author also forecast several possible novel approaches and future research directions of system virtualization.
 
 
-  \englishkeywords{\large Virtualization, Data privacy, Nested virtualization, VM consolidation, vCPU ballooning}
+  \englishkeywords{\large Virtualization, Data privacy, Nested virtualization, VM consolidation, vCPU Ballooning}
 \end{englishabstract}
